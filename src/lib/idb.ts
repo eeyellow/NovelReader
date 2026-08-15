@@ -100,6 +100,16 @@ export const LocalStore = {
     await db.delete("local_progress", bookId);
   },
 
+  async updateBookTitle(bookId: string, title: string) {
+    const db = await getLocalDB();
+    if (!db) return;
+    const existing = await db.get("books_content", bookId);
+    if (existing) {
+      existing.title = title;
+      await db.put("books_content", existing);
+    }
+  },
+
   async saveLocalProgress(
     bookId: string,
     charOffset: number,

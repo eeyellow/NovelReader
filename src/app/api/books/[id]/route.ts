@@ -41,3 +41,39 @@ export async function DELETE(
     );
   }
 }
+
+export async function PATCH(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await context.params;
+    const body = await req.json();
+    const { title } = body;
+
+    if (!title || typeof title !== "string" || !title.trim()) {
+      return NextResponse.json(
+        { success: false, error: "書名不得為空" },
+        { status: 400 }
+      );
+    }
+
+    const trimmedTitle = title.trim();
+    BookModel.updateTitle(id, trimmedTitle);
+    const updatedBook = BookModel.getById(id);
+
+    if (!updatedBook) {
+      return NextResponse.json(
+        { success: false, error: "找不到該書籍" },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ success: true, book: updatedBook });
+  } catch (error: any) {
+    return NextResponse.json(
+      { success: false, error: error.message || "更新書名失敗" },
+      { status: 500 }
+    );
+  }
+}

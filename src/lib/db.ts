@@ -170,6 +170,16 @@ export const BookModel = {
     const stmt = db.prepare("DELETE FROM books WHERE id = ?");
     return stmt.run(id);
   },
+
+  updateTitle(id: string, title: string) {
+    const db = getDb();
+    const stmt = db.prepare(`
+      UPDATE books 
+      SET title = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    return stmt.run(title, id);
+  },
 };
 
 export const ProgressModel = {

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
 import {
   BookOpen,
@@ -23,6 +23,13 @@ import {
   BookMarked,
   X,
   Check,
+  Palette,
+  Pencil,
+  LayoutGrid,
+  List,
+  ArrowUpDown,
+  ArrowUpWideNarrow,
+  ArrowDownWideNarrow,
 } from "lucide-react";
 import { Book } from "@/lib/db";
 import { LocalStore, requestPersistentStorage } from "@/lib/idb";
@@ -38,6 +45,9 @@ const THEMES = [
   { id: "light", name: "極簡白", icon: Sun, color: "bg-[#ffffff] border-[#ccc]" },
 ];
 
+type SortField = "updated" | "title" | "progress" | "chars";
+type SortOrder = "asc" | "desc";
+
 export default function BookshelfPage() {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,35 +61,70 @@ export default function BookshelfPage() {
   const [deviceName, setDeviceNameState] = useState("");
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [tempDeviceName, setTempDeviceName] = useState("");
-
-  // Simplified Chinese conversion modal state
   const [pendingSimplifiedFile, setPendingSimplifiedFile] = useState<File | null>(null);
+  const [editingBook, setEditingBook] = useState<{ id: string; title: string } | null>(null);
+  const [editTitleInput, setEditTitleInput] = useState("");
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
+  const [layoutMode, setLayoutMode] = useState<"compact" | "detailed">("detailed");
+  const [sortBy, setSortBy] = useState<SortField>("updated");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
   const [rememberConversionChoice, setRememberConversionChoice] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
 
-  // Initialize theme & load data
+  // Close theme menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        themeMenuRef.current &&
+        !themeMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowThemeMenu(false);
+      }
+    };
+
+    if (showThemeMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showThemeMenu]);
+
+  // Initialize theme, layout, sort & load data
   useEffect(() => {
     // 1. Theme
     const savedTheme = localStorage.getItem("novel_reader_theme") || "parchment";
     setCurrentTheme(savedTheme);
     document.documentElement.setAttribute("data-theme", savedTheme);
 
-    // 2. Device Name
+    // 2. Shelf Layout (compact vs detailed)
+    const savedLayout = (localStorage.getItem("novel_reader_shelf_layout") as "compact" | "detailed") || "detailed";
+    setLayoutMode(savedLayout);
+
+    // 3. Sorting preferences
+    const savedSortBy = (localStorage.getItem("novel_reader_sort_by") as SortField) || "updated";
+    const savedSortOrder = (localStorage.getItem("novel_reader_sort_order") as SortOrder) || "desc";
+    setSortBy(savedSortBy);
+    setSortOrder(savedSortOrder);
+
+    // 4. Device Name
     const devName = getDeviceName();
     setDeviceNameState(devName);
     setTempDeviceName(devName);
 
-    // 3. Persistent Storage (for Safari/iOS)
+    // 5. Persistent Storage (for Safari/iOS)
     requestPersistentStorage().catch(console.warn);
 
-    // 4. Online/Offline detection
+    // 6. Online/Offline detection
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
     setIsOffline(!navigator.onLine);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
 
-    // 5. Fetch Books
+    // 7. Fetch Books
     fetchBooks();
 
     return () => {
@@ -87,6 +132,22 @@ export default function BookshelfPage() {
       window.removeEventListener("offline", handleOffline);
     };
   }, []);
+
+  const handleSetLayout = (mode: "compact" | "detailed") => {
+    setLayoutMode(mode);
+    localStorage.setItem("novel_reader_shelf_layout", mode);
+  };
+
+  const handleSetSortBy = (field: SortField) => {
+    setSortBy(field);
+    localStorage.setItem("novel_reader_sort_by", field);
+  };
+
+  const handleToggleSortOrder = () => {
+    const nextOrder: SortOrder = sortOrder === "asc" ? "desc" : "asc";
+    setSortOrder(nextOrder);
+    localStorage.setItem("novel_reader_sort_order", nextOrder);
+  };
 
   const changeTheme = (themeId: string) => {
     setCurrentTheme(themeId);
@@ -128,6 +189,11 @@ export default function BookshelfPage() {
     for (const book of bookList) {
       const cached = await LocalStore.isBookCached(book.id);
       cacheMap[book.id] = cached;
+
+      if (cached) {
+        // Keep cached title in sync with server title
+        await LocalStore.updateBookTitle(book.id, book.title);
+      }
 
       const prog = await LocalStore.getLocalProgress(book.id);
       if (prog) {
@@ -285,6 +351,60 @@ export default function BookshelfPage() {
     }
   };
 
+  // Open rename modal
+  const handleOpenRename = (e: React.MouseEvent, book: Book) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditingBook({ id: book.id, title: book.title });
+    setEditTitleInput(book.title);
+  };
+
+  // Save renamed book title
+  const handleSaveTitle = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!editingBook) return;
+    const trimmed = editTitleInput.trim();
+    if (!trimmed) {
+      alert("書名不能為空");
+      return;
+    }
+    if (trimmed === editingBook.title) {
+      setEditingBook(null);
+      return;
+    }
+
+    setIsSavingTitle(true);
+    try {
+      const res = await fetch(`/api/books/${editingBook.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: trimmed }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "更新書名失敗");
+      }
+
+      // Update local cache in IndexedDB
+      await LocalStore.updateBookTitle(editingBook.id, trimmed);
+
+      // Update state
+      setBooks((prev) => {
+        const updated = prev.map((b) =>
+          b.id === editingBook.id ? { ...b, title: trimmed } : b
+        );
+        LocalStore.setSetting("cached_book_list", updated);
+        return updated;
+      });
+      setEditingBook(null);
+    } catch (err: any) {
+      alert(err.message || "更新書名失敗");
+    } finally {
+      setIsSavingTitle(false);
+    }
+  };
+
   // Save device name
   const handleSaveDeviceName = () => {
     if (tempDeviceName.trim()) {
@@ -325,35 +445,65 @@ export default function BookshelfPage() {
     return date.toLocaleDateString();
   };
 
-  const filteredBooks = books.filter((b) =>
-    b.title.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredBooks = useMemo(() => {
+    const list = books.filter((b) =>
+      b.title.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+    return list.sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === "title") {
+        cmp = a.title.localeCompare(b.title, "zh-Hant");
+      } else if (sortBy === "progress") {
+        const aProg = localProgress[a.id]?.percentage ?? a.percentage ?? 0;
+        const bProg = localProgress[b.id]?.percentage ?? b.percentage ?? 0;
+        cmp = aProg - bProg;
+      } else if (sortBy === "chars") {
+        const aChars = a.total_chars || 0;
+        const bChars = b.total_chars || 0;
+        cmp = aChars - bChars;
+      } else {
+        // "updated" - last progress update time or creation time
+        const aTime = new Date(
+          localProgress[a.id]?.updated_at || a.progress_updated_at || a.created_at
+        ).getTime();
+        const bTime = new Date(
+          localProgress[b.id]?.updated_at || b.progress_updated_at || b.created_at
+        ).getTime();
+        cmp = aTime - bTime;
+      }
+
+      return sortOrder === "asc" ? cmp : -cmp;
+    });
+  }, [books, searchTerm, sortBy, sortOrder, localProgress]);
 
   return (
     <div className="min-h-screen flex flex-col transition-colors duration-200">
       {/* Top Navbar */}
-      <header className="sticky top-0 z-30 backdrop-blur-md border-b border-[var(--border-color)] bg-[var(--header-bg)] px-4 sm:px-8 py-3.5 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="p-2 rounded-xl bg-[var(--accent-color)] text-white shadow-sm">
+      <header className="sticky top-0 z-30 backdrop-blur-md border-b border-[var(--border-color)] bg-[var(--header-bg)] px-4 sm:px-8 py-3.5 flex items-center justify-between gap-2">
+        <div className="flex items-center space-x-3 min-w-0">
+          <div className="p-2 rounded-xl bg-[var(--accent-color)] text-white shadow-sm shrink-0">
             <BookOpen className="w-5 h-5" />
           </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight">小說書架</h1>
-            <p className="text-xs text-[var(--text-muted)] flex items-center gap-1">
-              <span>PWA 離線同步版</span>
+          <div className="min-w-0">
+            <h1 className="text-lg font-bold tracking-tight truncate">小說書架</h1>
+            <p className="text-xs">
               {isOffline ? (
-                <span className="inline-flex items-center text-amber-600 dark:text-amber-400 font-medium">
-                  <WifiOff className="w-3 h-3 mr-0.5 inline" /> 離線模式
+                <span className="inline-flex items-center text-amber-600 dark:text-amber-400 font-medium whitespace-nowrap">
+                  <WifiOff className="w-3 h-3 mr-1 inline shrink-0" /> 離線模式
                 </span>
               ) : (
-                <span className="text-emerald-600 dark:text-emerald-400 font-medium">● 雲端連線</span>
+                <span className="inline-flex items-center text-emerald-600 dark:text-emerald-400 font-medium whitespace-nowrap">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5 inline-block shrink-0 animate-pulse" />
+                  雲端連線
+                </span>
               )}
             </p>
           </div>
         </div>
 
         {/* Right Tools: Device Name, Theme Toggle, Refresh */}
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 shrink-0">
           {/* Device Tag */}
           <button
             onClick={() => setShowDeviceModal(true)}
@@ -370,26 +520,50 @@ export default function BookshelfPage() {
             <span className="font-medium">{deviceName}</span>
           </button>
 
-          {/* Theme Selector */}
-          <div className="flex items-center space-x-1 p-1 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)]">
-            {THEMES.map((theme) => {
-              const Icon = theme.icon;
-              const isActive = currentTheme === theme.id;
-              return (
-                <button
-                  key={theme.id}
-                  onClick={() => changeTheme(theme.id)}
-                  title={theme.name}
-                  className={`p-1.5 rounded-md text-xs transition-all ${
-                    isActive
-                      ? "bg-[var(--accent-color)] text-white shadow-sm"
-                      : "text-[var(--text-muted)] hover:text-[var(--text-color)]"
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                </button>
-              );
-            })}
+          {/* Collapsible Theme Selector */}
+          <div className="relative" ref={themeMenuRef}>
+            <button
+              onClick={() => setShowThemeMenu((prev) => !prev)}
+              className={`p-2 rounded-lg border border-[var(--border-color)] transition-colors ${
+                showThemeMenu
+                  ? "bg-[var(--accent-color)] text-white border-[var(--accent-color)]"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-color)] hover:border-[var(--accent-color)]"
+              }`}
+              title="切換佈景主題"
+              aria-label="切換佈景主題"
+              aria-expanded={showThemeMenu}
+            >
+              <Palette className="w-4 h-4" />
+            </button>
+
+            {showThemeMenu && (
+              <div className="absolute right-0 mt-2 w-36 rounded-xl border border-[var(--border-color)] bg-[var(--card-bg)] shadow-lg py-1 z-50">
+                {THEMES.map((theme) => {
+                  const Icon = theme.icon;
+                  const isActive = currentTheme === theme.id;
+                  return (
+                    <button
+                      key={theme.id}
+                      onClick={() => {
+                        changeTheme(theme.id);
+                        setShowThemeMenu(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2 text-xs transition-colors ${
+                        isActive
+                          ? "text-[var(--accent-color)] font-semibold bg-[var(--accent-color)]/10"
+                          : "text-[var(--text-color)] hover:bg-[var(--bg-color)]"
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2">
+                        <Icon className="w-3.5 h-3.5 shrink-0" />
+                        <span>{theme.name}</span>
+                      </div>
+                      {isActive && <Check className="w-3.5 h-3.5 text-[var(--accent-color)] shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Refresh button */}
@@ -470,29 +644,100 @@ export default function BookshelfPage() {
 
         {/* Bookshelf Section */}
         <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-muted)] shrink-0">
               書庫清單 ({filteredBooks.length})
             </h2>
-            <div className="text-xs text-[var(--text-muted)] flex items-center gap-3">
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> 已離線快取
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> 雲端存放
-              </span>
+            <div className="text-xs text-[var(--text-muted)] flex flex-wrap items-center gap-2 sm:gap-3">
+              {/* Sorting Controls */}
+              <div className="flex items-center space-x-1 p-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)]">
+                <span className="pl-2 text-[var(--text-muted)] flex items-center">
+                  <ArrowUpDown className="w-3.5 h-3.5 mr-1 shrink-0" />
+                  <span className="hidden xs:inline sm:inline text-xs">排序：</span>
+                </span>
+                <select
+                  value={sortBy}
+                  onChange={(e) => handleSetSortBy(e.target.value as SortField)}
+                  className="bg-transparent text-xs text-[var(--text-color)] focus:outline-none cursor-pointer py-1 pr-1 font-medium"
+                >
+                  <option value="updated" className="bg-[var(--card-bg)] text-[var(--text-color)]">更新時間</option>
+                  <option value="title" className="bg-[var(--card-bg)] text-[var(--text-color)]">書名</option>
+                  <option value="progress" className="bg-[var(--card-bg)] text-[var(--text-color)]">閱讀進度</option>
+                  <option value="chars" className="bg-[var(--card-bg)] text-[var(--text-color)]">總字數</option>
+                </select>
+
+                <button
+                  onClick={handleToggleSortOrder}
+                  className="p-1 px-1.5 rounded-md hover:bg-[var(--border-color)]/50 text-[var(--text-color)] transition-colors flex items-center space-x-1 font-medium"
+                  title={sortOrder === "asc" ? "目前為升冪（由小至大/舊至新），點擊切換為降冪" : "目前為降冪（由大至小/新至舊），點擊切換為升冪"}
+                  aria-label="切換升降冪"
+                >
+                  {sortOrder === "asc" ? (
+                    <>
+                      <ArrowUpWideNarrow className="w-3.5 h-3.5 text-[var(--accent-color)]" />
+                      <span className="text-[11px] text-[var(--accent-color)]">升冪</span>
+                    </>
+                  ) : (
+                    <>
+                      <ArrowDownWideNarrow className="w-3.5 h-3.5 text-[var(--accent-color)]" />
+                      <span className="text-[11px] text-[var(--accent-color)]">降冪</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Layout Switcher */}
+              <div className="flex items-center p-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)]">
+                <button
+                  onClick={() => handleSetLayout("compact")}
+                  className={`p-1.5 sm:px-2.5 sm:py-1 rounded-md text-xs flex items-center space-x-1 transition-all ${
+                    layoutMode === "compact"
+                      ? "bg-[var(--accent-color)] text-white shadow-sm font-medium"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-color)]"
+                  }`}
+                  title="精簡資訊 (列表)"
+                  aria-label="精簡資訊"
+                >
+                  <List className="w-3.5 h-3.5 shrink-0" />
+                  <span className="hidden xs:inline sm:inline text-xs">精簡</span>
+                </button>
+                <button
+                  onClick={() => handleSetLayout("detailed")}
+                  className={`p-1.5 sm:px-2.5 sm:py-1 rounded-md text-xs flex items-center space-x-1 transition-all ${
+                    layoutMode === "detailed"
+                      ? "bg-[var(--accent-color)] text-white shadow-sm font-medium"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-color)]"
+                  }`}
+                  title="詳細資訊 (卡片)"
+                  aria-label="詳細資訊"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5 shrink-0" />
+                  <span className="hidden xs:inline sm:inline text-xs">詳細</span>
+                </button>
+              </div>
             </div>
           </div>
 
           {loading ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className="h-44 rounded-2xl bg-[var(--card-bg)] animate-pulse border border-[var(--border-color)]"
-                />
-              ))}
-            </div>
+            layoutMode === "compact" ? (
+              <div className="space-y-2">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div
+                    key={i}
+                    className="h-12 rounded-xl bg-[var(--card-bg)] animate-pulse border border-[var(--border-color)]"
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[1, 2, 3].map((i) => (
+                  <div
+                    key={i}
+                    className="h-44 rounded-2xl bg-[var(--card-bg)] animate-pulse border border-[var(--border-color)]"
+                  />
+                ))}
+              </div>
+            )
           ) : filteredBooks.length === 0 ? (
             <div className="text-center py-16 px-4 rounded-2xl border border-[var(--border-color)] bg-[var(--card-bg)] space-y-3">
               <BookOpen className="w-12 h-12 mx-auto text-[var(--text-muted)] opacity-50" />
@@ -503,7 +748,59 @@ export default function BookshelfPage() {
                   : "快把電腦或手機裡的 .TXT 小說檔案拖曳進來開始閱讀吧！"}
               </p>
             </div>
+          ) : layoutMode === "compact" ? (
+            /* Compact List View */
+            <div className="space-y-2">
+              {filteredBooks.map((book) => {
+                const isCached = !!cachedStatus[book.id];
+                const local = localProgress[book.id];
+                const percentage =
+                  local?.percentage !== undefined
+                    ? local.percentage
+                    : book.percentage || 0;
+
+                return (
+                  <Link
+                    key={book.id}
+                    href={`/reader/${book.id}`}
+                    className="group flex items-center justify-between p-3 sm:px-4.5 rounded-xl border border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--card-bg)] hover:shadow-sm transition-all duration-150 gap-3"
+                  >
+                    {/* Book Title */}
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-semibold text-sm sm:text-base truncate group-hover:text-[var(--accent-color)] transition-colors">
+                        {book.title}
+                      </h3>
+                    </div>
+
+                    {/* Right: Progress & Cache Status Icon */}
+                    <div className="flex items-center space-x-3 shrink-0">
+                      <span className="text-xs font-medium text-[var(--accent-color)] tabular-nums">
+                        {percentage > 0 ? `進度 ${percentage.toFixed(1)}%` : "未讀"}
+                      </span>
+
+                      {isCached ? (
+                        <span
+                          className="inline-flex items-center text-emerald-600 dark:text-emerald-400"
+                          title="已快取至本機，離線可讀"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                        </span>
+                      ) : (
+                        <button
+                          onClick={(e) => handleCacheBook(e, book)}
+                          className="p-0.5 text-amber-600 dark:text-amber-400 hover:scale-110 transition-transform"
+                          title="點擊預先下載至本機快取"
+                        >
+                          <DownloadCloud className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
           ) : (
+            /* Detailed Grid View */
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredBooks.map((book) => {
                 const isCached = !!cachedStatus[book.id];
@@ -578,16 +875,25 @@ export default function BookshelfPage() {
 
                       {/* Device & Actions */}
                       <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)] pt-1">
-                        <span className="truncate max-w-[150px]">
+                        <span className="truncate max-w-[140px]">
                           {lastDevice ? `上次：${lastDevice}` : "尚未開始"}
                         </span>
-                        <button
-                          onClick={(e) => handleDeleteBook(e, book)}
-                          className="p-1 rounded text-[var(--text-muted)] hover:text-red-500 transition-colors opacity-60 hover:opacity-100"
-                          title="刪除小說"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center space-x-1 shrink-0">
+                          <button
+                            onClick={(e) => handleOpenRename(e, book)}
+                            className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent-color)] transition-colors opacity-60 hover:opacity-100"
+                            title="修改書名"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => handleDeleteBook(e, book)}
+                            className="p-1 rounded text-[var(--text-muted)] hover:text-red-500 transition-colors opacity-60 hover:opacity-100"
+                            title="刪除小說"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </Link>
@@ -692,6 +998,52 @@ export default function BookshelfPage() {
                 <span>轉換為繁體中文</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Book Modal */}
+      {editingBook && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-base">修改書籍名稱</h3>
+              <button
+                onClick={() => setEditingBook(null)}
+                className="text-[var(--text-muted)] hover:text-[var(--text-color)] p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-[var(--text-muted)]">
+              自訂書架上顯示的書籍名稱，不會影響原始檔案內容。
+            </p>
+            <form onSubmit={handleSaveTitle} className="space-y-4">
+              <input
+                type="text"
+                value={editTitleInput}
+                onChange={(e) => setEditTitleInput(e.target.value)}
+                placeholder="請輸入新書名"
+                autoFocus
+                className="w-full px-3.5 py-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+              />
+              <div className="flex justify-end space-x-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setEditingBook(null)}
+                  className="px-4 py-2 rounded-xl text-xs text-[var(--text-muted)] hover:text-[var(--text-color)]"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingTitle || !editTitleInput.trim()}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--accent-color)] text-white shadow-sm hover:opacity-90 disabled:opacity-50 transition-opacity"
+                >
+                  {isSavingTitle ? "儲存中..." : "儲存名稱"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
