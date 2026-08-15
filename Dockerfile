@@ -20,7 +20,7 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV PORT=3000
+ENV PORT=4000
 ENV HOSTNAME="0.0.0.0"
 ENV DATA_DIR="/app/data"
 
@@ -36,6 +36,6 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=deps /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
 
 VOLUME ["/app/data"]
-EXPOSE 3000
+EXPOSE 4000
 
 CMD ["node", "server.js"]

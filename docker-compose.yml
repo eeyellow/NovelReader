@@ -6,11 +6,11 @@ services:
     container_name: novel-reader
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "4000:4000"
     environment:
       - NODE_ENV=production
       - DATA_DIR=/app/data
-      - PORT=3000
+      - PORT=4000
     volumes:
       # Mount persistent SQLite database and uploaded novel files
       - ./data:/app/data

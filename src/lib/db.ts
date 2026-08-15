@@ -7,50 +7,72 @@ const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_PATH = path.join(DATA_DIR, "novel_reader.db");
 
-// Ensure directories exist
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+let dbInstance: Database.Database | null = null;
+
+export function getDb(): Database.Database {
+  if (!dbInstance) {
+    // Ensure directories exist
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(UPLOADS_DIR)) {
+      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+    }
+
+    // Initialize SQLite database with 10s retry timeout to prevent SQLITE_BUSY
+    dbInstance = new Database(DB_PATH, {
+      timeout: 10000,
+    });
+
+    // Set busy timeout and foreign keys
+    dbInstance.pragma("busy_timeout = 10000");
+    dbInstance.pragma("foreign_keys = ON");
+
+    // Attempt WAL mode, fallback to DELETE mode if on network share / NAS without shared memory
+    try {
+      dbInstance.pragma("journal_mode = WAL");
+    } catch (e) {
+      try {
+        dbInstance.pragma("journal_mode = DELETE");
+      } catch (err) {
+        console.warn("Could not set journal mode:", err);
+      }
+    }
+
+    // Initialize Schema lazily
+    dbInstance.exec(`
+      CREATE TABLE IF NOT EXISTS books (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        total_chars INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS reading_progress (
+        book_id TEXT PRIMARY KEY,
+        char_offset INTEGER NOT NULL DEFAULT 0,
+        percentage REAL NOT NULL DEFAULT 0.0,
+        device_name TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS bookmarks (
+        id TEXT PRIMARY KEY,
+        book_id TEXT NOT NULL,
+        char_offset INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        preview_text TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+      );
+    `);
+  }
+  return dbInstance;
 }
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-}
-
-// Initialize SQLite database
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
-
-// Initialize Schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS books (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    file_name TEXT NOT NULL,
-    file_size INTEGER NOT NULL,
-    total_chars INTEGER NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS reading_progress (
-    book_id TEXT PRIMARY KEY,
-    char_offset INTEGER NOT NULL DEFAULT 0,
-    percentage REAL NOT NULL DEFAULT 0.0,
-    device_name TEXT,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS bookmarks (
-    id TEXT PRIMARY KEY,
-    book_id TEXT NOT NULL,
-    char_offset INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    preview_text TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
-  );
-`);
 
 export interface Book {
   id: string;
@@ -86,6 +108,7 @@ export interface Bookmark {
 // Database helper functions
 export const BookModel = {
   getAll(): Book[] {
+    const db = getDb();
     const stmt = db.prepare(`
       SELECT 
         b.*,
@@ -101,6 +124,7 @@ export const BookModel = {
   },
 
   getById(id: string): Book | undefined {
+    const db = getDb();
     const stmt = db.prepare(`
       SELECT 
         b.*,
@@ -122,6 +146,7 @@ export const BookModel = {
     file_size: number;
     total_chars: number;
   }) {
+    const db = getDb();
     const stmt = db.prepare(`
       INSERT INTO books (id, title, file_name, file_size, total_chars)
       VALUES (@id, @title, @file_name, @file_size, @total_chars)
@@ -141,6 +166,7 @@ export const BookModel = {
         }
       }
     }
+    const db = getDb();
     const stmt = db.prepare("DELETE FROM books WHERE id = ?");
     return stmt.run(id);
   },
@@ -148,6 +174,7 @@ export const BookModel = {
 
 export const ProgressModel = {
   get(bookId: string): ReadingProgress | undefined {
+    const db = getDb();
     const stmt = db.prepare(
       "SELECT * FROM reading_progress WHERE book_id = ?"
     );
@@ -161,6 +188,7 @@ export const ProgressModel = {
     deviceName: string,
     clientUpdatedAt?: string
   ): { updated: boolean; currentProgress: ReadingProgress } {
+    const db = getDb();
     const existing = this.get(bookId);
     const now = clientUpdatedAt || new Date().toISOString();
 
@@ -213,4 +241,4 @@ export const ProgressModel = {
   },
 };
 
-export { DATA_DIR, UPLOADS_DIR, db };
+export { DATA_DIR, UPLOADS_DIR };
