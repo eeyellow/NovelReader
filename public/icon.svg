@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2a231d" />
+      <stop offset="100%" stop-color="#14110f" />
+    </linearGradient>
+    <linearGradient id="accent-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e8a86c" />
+      <stop offset="100%" stop-color="#b86b2d" />
+    </linearGradient>
+  </defs>
+  <!-- Background Rounded Rect -->
+  <rect width="512" height="512" rx="112" fill="url(#bg-grad)" />
+  <!-- Book Spine & Pages -->
+  <path d="M128 140 C128 124 140 112 156 112 L240 112 C248 112 256 118 256 128 L256 384 C256 380 248 376 240 376 L156 376 C140 376 128 388 128 404 Z" fill="#ffffff" opacity="0.95" />
+  <path d="M384 140 C384 124 372 112 356 112 L272 112 C264 112 256 118 256 128 L256 384 C256 380 264 376 272 376 L356 376 C372 376 384 388 384 404 Z" fill="#ffffff" opacity="0.90" />
+  <!-- Book Spine Center line -->
+  <path d="M256 120 L256 390" stroke="url(#accent-grad)" stroke-width="10" stroke-linecap="round" />
+  <!-- Bookmark Ribbon -->
+  <path d="M224 112 L224 230 L240 214 L256 230 L256 112 Z" fill="url(#accent-grad)" />
+  <!-- Stylized Lines representing text -->
+  <line x1="160" y1="180" x2="220" y2="180" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+  <line x1="160" y1="220" x2="220" y2="220" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+  <line x1="160" y1="260" x2="220" y2="260" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+  <line x1="160" y1="300" x2="210" y2="300" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+  <line x1="290" y1="180" x2="350" y2="180" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+  <line x1="290" y1="220" x2="350" y2="220" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+  <line x1="290" y1="260" x2="350" y2="260" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+  <line x1="290" y1="300" x2="340" y2="300" stroke="#8b5e3c" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+</svg>
