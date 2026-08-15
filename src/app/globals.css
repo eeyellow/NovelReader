@@ -96,6 +96,10 @@ body {
 /* Reader Text Container */
 .novel-content-paragraph {
   text-indent: 2em;
-  margin-bottom: 1.15em;
+  margin-bottom: 1em;
   word-break: break-word;
+  text-align: justify;
+  text-justify: inter-ideograph;
+  break-inside: auto;
 }
+
