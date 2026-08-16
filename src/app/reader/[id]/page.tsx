@@ -667,6 +667,11 @@ export default function ReaderPage() {
       {/* Main Multi-Column Paginated Reading Viewport */}
       <main
         onClick={(e) => {
+          // 若有反白選取文字則不觸發點擊翻頁
+          const selection = window.getSelection();
+          if (selection && selection.toString().length > 0) {
+            return;
+          }
           // Screen click zones:
           // Left 28% | Middle 44% (Toggle Toolbar) | Right 28%
           const xRatio = e.clientX / window.innerWidth;
@@ -733,41 +738,6 @@ export default function ReaderPage() {
               </div>
             </div>
           )}
-        </div>
-
-        {/* Floating Page Flip Click Hover Indicators */}
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            clickDirection === "inverted" ? goToNextPage() : goToPrevPage();
-          }}
-          className="absolute left-0 inset-y-14 w-12 sm:w-20 cursor-pointer z-20 group flex items-center justify-start pl-2 opacity-0 hover:opacity-100 transition-opacity"
-          title={clickDirection === "inverted" ? "下一頁" : "上一頁"}
-        >
-          <div className="p-2 rounded-full bg-neutral-900/40 text-white backdrop-blur-xs shadow-md group-hover:scale-110 transition-transform">
-            {clickDirection === "inverted" ? (
-              <ChevronRight className="w-5 h-5" />
-            ) : (
-              <ChevronLeft className="w-5 h-5" />
-            )}
-          </div>
-        </div>
-
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            clickDirection === "inverted" ? goToPrevPage() : goToNextPage();
-          }}
-          className="absolute right-0 inset-y-14 w-12 sm:w-20 cursor-pointer z-20 group flex items-center justify-end pr-2 opacity-0 hover:opacity-100 transition-opacity"
-          title={clickDirection === "inverted" ? "上一頁" : "下一頁"}
-        >
-          <div className="p-2 rounded-full bg-neutral-900/40 text-white backdrop-blur-xs shadow-md group-hover:scale-110 transition-transform">
-            {clickDirection === "inverted" ? (
-              <ChevronLeft className="w-5 h-5" />
-            ) : (
-              <ChevronRight className="w-5 h-5" />
-            )}
-          </div>
         </div>
       </main>
 
