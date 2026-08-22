@@ -58,7 +58,11 @@ export function syncProgress(
   const deviceName = getDeviceName();
   const timestamp = new Date().toISOString();
 
-  // 1. Save to local IndexedDB immediately
+  // 1. Save to local IndexedDB and localStorage immediately
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem("novel_reader_last_book_id", bookId);
+  }
+
   LocalStore.saveLocalProgress(
     bookId,
     charOffset,

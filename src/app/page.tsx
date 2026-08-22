@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   BookOpen,
   Upload,
@@ -49,8 +50,11 @@ type SortField = "updated" | "title" | "progress" | "chars";
 type SortOrder = "asc" | "desc";
 
 export default function BookshelfPage() {
+  const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRedirecting, setIsRedirecting] = useState(false);
+  const [autoResume, setAutoResume] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [cachedStatus, setCachedStatus] = useState<Record<string, boolean>>({});
@@ -92,8 +96,28 @@ export default function BookshelfPage() {
     };
   }, [showThemeMenu]);
 
-  // Initialize theme, layout, sort & load data
+  // Initialize theme, layout, sort & load data (and check auto-resume)
   useEffect(() => {
+    // 0. PWA / App 啟動自動接續上次閱讀檢查
+    if (typeof window !== "undefined") {
+      const searchParams = new URLSearchParams(window.location.search);
+      const isManualShelf =
+        searchParams.get("from") === "reader" ||
+        searchParams.get("shelf") === "1";
+
+      const savedAutoResume =
+        localStorage.getItem("novel_reader_auto_resume") !== "false";
+      setAutoResume(savedAutoResume);
+
+      const lastBookId = localStorage.getItem("novel_reader_last_book_id");
+
+      if (savedAutoResume && lastBookId && !isManualShelf) {
+        setIsRedirecting(true);
+        window.location.replace(`/reader/${encodeURIComponent(lastBookId)}`);
+        return;
+      }
+    }
+
     // 1. Theme
     const savedTheme = localStorage.getItem("novel_reader_theme") || "parchment";
     setCurrentTheme(savedTheme);
@@ -156,27 +180,54 @@ export default function BookshelfPage() {
   };
 
   const fetchBooks = async () => {
-    setLoading(true);
+    // 1. 離線優先：立即讀取本機快取書籍清單與進度，做到 0 延遲秒開畫面
     try {
-      const res = await fetch("/api/books");
+      let cachedList = await LocalStore.getSetting<Book[]>("cached_book_list", []);
+      if (!cachedList || cachedList.length === 0) {
+        cachedList = await LocalStore.getAllCachedBooks();
+      }
+      if (cachedList && cachedList.length > 0) {
+        setBooks(cachedList);
+        setLoading(false);
+        checkAllCaches(cachedList);
+      }
+    } catch (e) {
+      console.warn("讀取本機離線快取失敗", e);
+    }
+
+    // 2. 背景非阻塞發送請求與雲端/NAS 比對同步
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+      const res = await fetch("/api/books", { signal: controller.signal });
+      clearTimeout(timeoutId);
+
       if (res.ok) {
         const data = await res.json();
-        if (data.success) {
+        if (data.success && Array.isArray(data.books)) {
           setBooks(data.books);
-          // Check cache status for each book
+          setIsOffline(false);
           checkAllCaches(data.books);
-          // Save books list to local storage as offline cache
           LocalStore.setSetting("cached_book_list", data.books);
         }
       } else {
-        throw new Error("Failed to fetch books");
+        throw new Error("伺服器回應異常");
       }
     } catch (e) {
-      console.warn("Using offline book list", e);
+      console.warn("伺服器無法連線或逾時，保持離線快取模式", e);
       setIsOffline(true);
       const cached = await LocalStore.getSetting<Book[]>("cached_book_list", []);
-      setBooks(cached);
-      checkAllCaches(cached);
+      if (cached && cached.length > 0) {
+        setBooks(cached);
+        checkAllCaches(cached);
+      } else {
+        const localBooks = await LocalStore.getAllCachedBooks();
+        if (localBooks && localBooks.length > 0) {
+          setBooks(localBooks);
+          checkAllCaches(localBooks);
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -346,6 +397,12 @@ export default function BookshelfPage() {
       await fetch(`/api/books/${book.id}`, { method: "DELETE" });
       await LocalStore.deleteBookContent(book.id);
       setBooks((prev) => prev.filter((b) => b.id !== book.id));
+      if (
+        typeof window !== "undefined" &&
+        localStorage.getItem("novel_reader_last_book_id") === book.id
+      ) {
+        localStorage.removeItem("novel_reader_last_book_id");
+      }
     } catch (err) {
       alert("刪除失敗");
     }
@@ -476,6 +533,20 @@ export default function BookshelfPage() {
       return sortOrder === "asc" ? cmp : -cmp;
     });
   }, [books, searchTerm, sortBy, sortOrder, localProgress]);
+
+  if (isRedirecting) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-color)] text-[var(--text-color)] select-none">
+        <div className="flex flex-col items-center space-y-4 p-6 text-center">
+          <div className="w-10 h-10 border-3 border-[var(--accent-color)] border-t-transparent rounded-full animate-spin" />
+          <div className="space-y-1">
+            <p className="text-base font-bold">正在返回最後閱讀進度...</p>
+            <p className="text-xs text-[var(--text-muted)]">無縫接軌繼續閱讀</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col transition-colors duration-200">
@@ -763,6 +834,11 @@ export default function BookshelfPage() {
                   <Link
                     key={book.id}
                     href={`/reader/${book.id}`}
+                    onClick={() => {
+                      if (typeof window !== "undefined") {
+                        localStorage.setItem("novel_reader_last_book_id", book.id);
+                      }
+                    }}
                     className="group flex items-center justify-between p-3 sm:px-4.5 rounded-xl border border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--card-bg)] hover:shadow-sm transition-all duration-150 gap-3"
                   >
                     {/* Book Title */}
@@ -817,6 +893,11 @@ export default function BookshelfPage() {
                   <Link
                     key={book.id}
                     href={`/reader/${book.id}`}
+                    onClick={() => {
+                      if (typeof window !== "undefined") {
+                        localStorage.setItem("novel_reader_last_book_id", book.id);
+                      }
+                    }}
                     className="group relative flex flex-col justify-between p-5 rounded-2xl border border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--card-bg)] hover:shadow-md transition-all duration-200"
                   >
                     <div>
@@ -919,6 +1000,30 @@ export default function BookshelfPage() {
               placeholder="例如：iPhone 15 Pro"
               className="w-full px-3.5 py-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
             />
+
+            <div className="pt-2 border-t border-[var(--border-color)]">
+              <label className="flex items-center justify-between cursor-pointer py-1 select-none">
+                <div className="pr-3">
+                  <div className="text-xs font-semibold">啟動時自動繼續閱讀</div>
+                  <div className="text-[11px] text-[var(--text-muted)]">
+                    開啟應用程式或 PWA 時，預設直接進入上次閱讀的小說
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={autoResume}
+                  onChange={(e) => {
+                    const val = e.target.checked;
+                    setAutoResume(val);
+                    localStorage.setItem(
+                      "novel_reader_auto_resume",
+                      val ? "true" : "false"
+                    );
+                  }}
+                  className="w-4 h-4 accent-[var(--accent-color)] rounded cursor-pointer shrink-0"
+                />
+              </label>
+            </div>
             <div className="flex justify-end space-x-2 pt-2">
               <button
                 onClick={() => setShowDeviceModal(false)}

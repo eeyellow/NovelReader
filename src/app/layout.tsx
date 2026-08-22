@@ -34,6 +34,25 @@ export default function RootLayout({
       <head>
         <link rel="icon" href="/icon.svg" type="image/svg+xml" />
         <link rel="apple-touch-icon" href="/icon.svg" />
+        {/* PWA / Cold-Start Instant Auto-Resume (executes before React hydration) */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var path = window.location.pathname;
+                  var search = window.location.search;
+                  var isManual = search.indexOf('from=reader') !== -1 || search.indexOf('shelf=1') !== -1;
+                  var autoResume = localStorage.getItem('novel_reader_auto_resume') !== 'false';
+                  var lastBookId = localStorage.getItem('novel_reader_last_book_id');
+                  if ((path === '/' || path === '') && !isManual && autoResume && lastBookId) {
+                    window.location.replace('/reader/' + encodeURIComponent(lastBookId));
+                  }
+                } catch(e) {}
+              })();
+            `,
+          }}
+        />
       </head>
       <body className="min-h-screen flex flex-col antialiased select-text">
         {children}

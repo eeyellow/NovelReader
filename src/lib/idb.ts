@@ -1,4 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from "idb";
+import type { Book } from "./db";
 
 interface NovelReaderDB extends DBSchema {
   books_content: {
@@ -142,6 +143,21 @@ export const LocalStore = {
     if (!db) return defaultValue;
     const val = await db.get("settings", key);
     return val !== undefined ? (val as T) : defaultValue;
+  },
+
+  async getAllCachedBooks(): Promise<Book[]> {
+    const db = await getLocalDB();
+    if (!db) return [];
+    const contents = await db.getAll("books_content");
+    return contents.map((c) => ({
+      id: c.book_id,
+      title: c.title,
+      file_name: `${c.title}.txt`,
+      file_size: c.content?.length || 0,
+      total_chars: c.total_chars || c.content?.length || 0,
+      created_at: c.cached_at || new Date().toISOString(),
+      updated_at: c.cached_at || new Date().toISOString(),
+    }));
   },
 
   async setSetting(key: string, value: any) {

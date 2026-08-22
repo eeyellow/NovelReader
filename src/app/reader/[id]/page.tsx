@@ -102,6 +102,7 @@ export default function ReaderPage() {
   const [viewportWidth, setViewportWidth] = useState(0);
   const pendingPageRef = useRef<"first" | "last" | null>(null);
   const pendingTargetOffset = useRef<number | null>(null);
+  const isRestoringProgress = useRef<boolean>(true);
 
   const columnGap = 36; // px
 
@@ -139,9 +140,16 @@ export default function ReaderPage() {
     document.documentElement.setAttribute("data-theme", savedTheme);
     setGestureConfig(loadGestureConfig());
 
+    // 紀錄最後閱讀書籍 ID 供 PWA 開啟時無縫接軌
+    localStorage.setItem("novel_reader_last_book_id", bookId);
+
     // Load book data
     loadBookData();
   }, [bookId]);
+
+  const handleBackToShelf = () => {
+    router.push("/?from=reader");
+  };
 
   const loadBookData = async () => {
     setIsLoading(true);
@@ -149,7 +157,7 @@ export default function ReaderPage() {
     let bookTitle = "未知小說";
     let bookChars = 0;
 
-    // 1. Try local IndexedDB first
+    // 1. 優先從本機 IndexedDB 快取讀取
     try {
       const cached = await LocalStore.getBookContent(bookId);
       if (cached && cached.content) {
@@ -161,13 +169,17 @@ export default function ReaderPage() {
       console.warn("IndexedDB read error:", e);
     }
 
-    // 2. If not cached, fetch from server
+    // 2. 若快取不存在，才發送網路請求向伺服器取得
     if (!bookText) {
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
         const [metaRes, contentRes] = await Promise.all([
-          fetch(`/api/books/${bookId}`),
-          fetch(`/api/books/${bookId}/content`),
+          fetch(`/api/books/${bookId}`, { signal: controller.signal }),
+          fetch(`/api/books/${bookId}/content`, { signal: controller.signal }),
         ]);
+        clearTimeout(timeoutId);
 
         if (metaRes.ok && contentRes.ok) {
           const metaData = await metaRes.json();
@@ -175,7 +187,7 @@ export default function ReaderPage() {
           bookTitle = metaData.book?.title || "未命名小說";
           bookChars = bookText.length;
 
-          // Save to IndexedDB
+          // 寫入本機快取
           await LocalStore.saveBookContent(bookId, bookTitle, bookText, bookChars);
         } else {
           throw new Error("無法讀取小說資料");
@@ -183,11 +195,12 @@ export default function ReaderPage() {
       } catch (err) {
         console.error(err);
         setIsOffline(true);
-        if (!bookText) {
-          alert("無法載入小說，請確認網路連線或該書籍已快取至本機。");
-          router.push("/");
-          return;
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("novel_reader_last_book_id");
         }
+        alert("無法載入小說，請確認網路連線或該書籍已快取至本機。");
+        router.push("/?from=reader");
+        return;
       }
     }
 
@@ -195,20 +208,31 @@ export default function ReaderPage() {
     setFullText(bookText);
     setTotalChars(bookChars);
 
-    // Extract chapters
+    // 解析章節
     const parsedChapters = extractChapters(bookText);
     setChapters(parsedChapters);
 
-    // 3. Determine starting offset
+    // 3. 取得本機閱讀進度並立刻完成畫面載入
     let targetOffset = 0;
     const localProg = await LocalStore.getLocalProgress(bookId);
     if (localProg && localProg.char_offset) {
       targetOffset = localProg.char_offset;
     }
 
-    // Check cloud progress for conflicts
+    const chIdx = findCurrentChapter(parsedChapters, targetOffset);
+    setCurrentChapterIdx(chIdx);
+    setCurrentOffset(targetOffset);
+    pendingTargetOffset.current = targetOffset;
+    setIsLoading(false);
+
+    // 4. 背景非阻塞檢查雲端進度衝突（不卡頓閱讀畫面）
     try {
-      const progRes = await fetch(`/api/progress?bookId=${bookId}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+      const progRes = await fetch(`/api/progress?bookId=${bookId}`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
       if (progRes.ok) {
         const progData = await progRes.json();
         if (progData.success && progData.progress) {
@@ -226,15 +250,8 @@ export default function ReaderPage() {
         }
       }
     } catch (e) {
-      // Offline
+      // 離線模式或超時忽略
     }
-
-    const chIdx = findCurrentChapter(parsedChapters, targetOffset);
-    setCurrentChapterIdx(chIdx);
-    setCurrentOffset(targetOffset);
-    pendingTargetOffset.current = targetOffset;
-
-    setIsLoading(false);
   };
 
   // Get current chapter text and paragraphs
@@ -271,19 +288,68 @@ export default function ReaderPage() {
     if (pendingPageRef.current === "last") {
       setCurrentPage(totalCols - 1);
       pendingPageRef.current = null;
+      isRestoringProgress.current = false;
     } else if (pendingPageRef.current === "first") {
       setCurrentPage(0);
       pendingPageRef.current = null;
+      isRestoringProgress.current = false;
     } else if (pendingTargetOffset.current !== null && currentChapter) {
-      const relOffset = Math.max(0, pendingTargetOffset.current - currentChapter.charOffset);
+      const relOffset = Math.max(
+        0,
+        pendingTargetOffset.current - currentChapter.charOffset
+      );
       const chLen = currentChapter.length || 1;
-      const targetP = Math.min(totalCols - 1, Math.max(0, Math.floor((relOffset / chLen) * totalCols)));
+
+      let targetP = 0;
+      // 精準段落 DOM 偏移量對齊
+      if (
+        contentRef.current &&
+        vWidth > 0 &&
+        currentChapterParagraphs.length > 0
+      ) {
+        let charAcc = 0;
+        let targetParaIdx = 0;
+        for (let i = 0; i < currentChapterParagraphs.length; i++) {
+          const pLen = currentChapterParagraphs[i].length;
+          if (charAcc + pLen >= relOffset) {
+            targetParaIdx = i;
+            break;
+          }
+          charAcc += pLen;
+        }
+
+        const pElements = contentRef.current.querySelectorAll(
+          "p.novel-content-paragraph"
+        );
+        if (pElements && pElements[targetParaIdx]) {
+          const pEl = pElements[targetParaIdx] as HTMLElement;
+          const colW = vWidth + columnGap;
+          targetP = Math.min(
+            totalCols - 1,
+            Math.max(0, Math.floor((pEl.offsetLeft + 8) / colW))
+          );
+        } else {
+          targetP = Math.min(
+            totalCols - 1,
+            Math.max(0, Math.floor((relOffset / chLen) * totalCols))
+          );
+        }
+      } else {
+        targetP = Math.min(
+          totalCols - 1,
+          Math.max(0, Math.floor((relOffset / chLen) * totalCols))
+        );
+      }
+
       setCurrentPage(targetP);
       pendingTargetOffset.current = null;
+      setTimeout(() => {
+        isRestoringProgress.current = false;
+      }, 150);
     } else {
       setCurrentPage((prev) => Math.min(prev, totalCols - 1));
     }
-  }, [currentChapter, columnGap]);
+  }, [currentChapter, currentChapterParagraphs, columnGap]);
 
   // Measure after layout or chapter/style change
   useLayoutEffect(() => {
@@ -313,15 +379,23 @@ export default function ReaderPage() {
 
   // Update current character offset & sync progress on page change
   useEffect(() => {
+    if (isRestoringProgress.current || pendingTargetOffset.current !== null) {
+      return;
+    }
     if (!currentChapter || !totalChars) return;
 
     const chStart = currentChapter.charOffset;
     const chLen = currentChapter.length || 0;
     const pageRatio = totalPages > 1 ? currentPage / (totalPages - 1) : 0;
-    const calculatedOffset = Math.min(totalChars, Math.round(chStart + pageRatio * chLen));
+    const calculatedOffset = Math.min(
+      totalChars,
+      Math.round(chStart + pageRatio * chLen)
+    );
 
     setCurrentOffset(calculatedOffset);
-    const percentage = Number(((calculatedOffset / totalChars) * 100).toFixed(2));
+    const percentage = Number(
+      ((calculatedOffset / totalChars) * 100).toFixed(2)
+    );
     syncProgress(bookId, calculatedOffset, percentage, false);
   }, [bookId, currentChapter, currentPage, totalPages, totalChars]);
 
@@ -520,7 +594,7 @@ export default function ReaderPage() {
           setShowSettings((prev) => !prev);
           break;
         case "BACK_TO_SHELF":
-          router.push("/");
+          handleBackToShelf();
           break;
         case "TOGGLE_FULLSCREEN":
           toggleFullscreen();
@@ -543,7 +617,7 @@ export default function ReaderPage() {
       goToNextChapter,
       goToFirstPage,
       goToLastPage,
-      router,
+      handleBackToShelf,
       toggleFullscreen,
       cycleTheme,
       updateFontSize,
@@ -575,13 +649,13 @@ export default function ReaderPage() {
         }`}
       >
         <div className="flex items-center space-x-2 truncate pr-2">
-          <Link
-            href="/"
+          <button
+            onClick={handleBackToShelf}
             className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
             title="返回書架"
           >
             <ArrowLeft className="w-5 h-5" />
-          </Link>
+          </button>
           <div className="truncate">
             <h1 className="text-sm font-bold truncate">{title}</h1>
             <p className="text-[11px] text-[var(--text-muted)] truncate">
