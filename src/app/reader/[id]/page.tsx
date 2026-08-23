@@ -92,6 +92,7 @@ export default function ReaderPage() {
   const [maxWidthMode, setMaxWidthMode] = useState<"narrow" | "normal" | "wide">("normal");
   const [clickDirection, setClickDirection] = useState<"standard" | "inverted">("standard");
   const [chineseVariant, setChineseVariant] = useState<"original" | "traditional" | "simplified">("original");
+  const [readMode, setReadMode] = useState<"paginated" | "continuous">("paginated");
 
   // UI state
   const [showToolbar, setShowToolbar] = useState(true);
@@ -131,6 +132,7 @@ export default function ReaderPage() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const readerMainRef = useRef<HTMLElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const pendingPageRef = useRef<"first" | "last" | null>(null);
   const pendingTargetOffset = useRef<number | null>(null);
@@ -141,6 +143,35 @@ export default function ReaderPage() {
   // Scrubber state
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPage, setScrubPage] = useState(0);
+
+  const updateReadMode = (mode: "paginated" | "continuous") => {
+    setReadMode(mode);
+    localStorage.setItem("novel_reader_read_mode", mode);
+    onUserActivity();
+  };
+
+  const handleContinuousScroll = () => {
+    onUserActivity();
+    if (!scrollContainerRef.current || !currentChapter) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    if (scrollHeight <= clientHeight) return;
+    const ratio = scrollTop / (scrollHeight - clientHeight);
+    const chStart = currentChapter.charOffset;
+    const chLen = currentChapter.length || 0;
+    const offset = Math.round(chStart + ratio * chLen);
+    setCurrentOffset(offset);
+
+    // Debounced sync
+    syncProgress(
+      bookId,
+      offset,
+      Number(((offset / (totalChars || 1)) * 100).toFixed(1)),
+      false,
+      {
+        chapter_index: currentChapterIdx,
+      }
+    );
+  };
 
   // Smart Screen Wake Lock for mobile power efficiency
   const { onUserActivity } = useWakeLock({ enabled: !isLoading });
@@ -187,6 +218,8 @@ export default function ReaderPage() {
     const savedMaxWidth = (localStorage.getItem("novel_reader_max_width") as any) || "normal";
     const savedClickDirection =
       (localStorage.getItem("novel_reader_click_direction") as "standard" | "inverted") || "standard";
+    const savedReadMode =
+      (localStorage.getItem("novel_reader_read_mode") as "paginated" | "continuous") || "paginated";
 
     setTheme(savedTheme);
     setFontSize(savedFontSize);
@@ -194,6 +227,7 @@ export default function ReaderPage() {
     setFontFamily(savedFontFamily);
     setMaxWidthMode(savedMaxWidth);
     setClickDirection(savedClickDirection);
+    setReadMode(savedReadMode);
     document.documentElement.setAttribute("data-theme", savedTheme);
     setGestureConfig(loadGestureConfig());
 
@@ -1058,76 +1092,166 @@ export default function ReaderPage() {
         </div>
       )}
 
-      {/* Main Multi-Column Paginated Reading Viewport */}
-      <main
-        ref={readerMainRef}
-        className="flex-1 overflow-hidden relative flex flex-col justify-center px-4 sm:px-8 py-14 select-text"
-      >
-        <div className={`mx-auto w-full h-full ${maxWidthClass} relative overflow-hidden`}>
-          {isLoading ? (
-            <div className="h-full flex flex-col items-center justify-center space-y-4 text-[var(--text-muted)]">
-              <RefreshCw className="w-8 h-8 animate-spin" />
-              <p className="text-sm">正在載入小說文本並初始化分頁排版...</p>
-            </div>
-          ) : (
-            <div ref={viewportRef} className="w-full h-full relative overflow-hidden">
-              <div
-                ref={contentRef}
-                className="h-full transition-transform duration-200 ease-out"
+      {/* Main Reading Viewport (Paginated vs Continuous Scroll) */}
+      {readMode === "paginated" ? (
+        <main
+          ref={readerMainRef}
+          className="flex-1 overflow-hidden relative flex flex-col justify-center px-4 sm:px-8 py-14 select-text"
+        >
+          <div className={`mx-auto w-full h-full ${maxWidthClass} relative overflow-hidden`}>
+            {isLoading ? (
+              <div className="h-full flex flex-col items-center justify-center space-y-4 text-[var(--text-muted)]">
+                <RefreshCw className="w-8 h-8 animate-spin" />
+                <p className="text-sm">正在載入小說文本並初始化分頁排版...</p>
+              </div>
+            ) : (
+              <div ref={viewportRef} className="w-full h-full relative overflow-hidden">
+                <div
+                  ref={contentRef}
+                  className="h-full transition-transform duration-200 ease-out"
+                  style={{
+                    width: viewportWidth > 0 ? `${viewportWidth}px` : "100%",
+                    columnWidth: viewportWidth > 0 ? `${viewportWidth}px` : "auto",
+                    columnGap: `${columnGap}px`,
+                    columnFill: "auto",
+                    transform:
+                      viewportWidth > 0
+                        ? `translateX(-${currentPage * (viewportWidth + columnGap)}px)`
+                        : "none",
+                    fontSize: `${fontSize}px`,
+                    lineHeight: lineHeight,
+                    letterSpacing: "0.03em",
+                  }}
+                >
+                  <article className={`select-text ${currentFontClass}`}>
+                    {/* Chapter Header */}
+                    <h2 className="text-xl sm:text-2xl font-bold mb-6 pb-3 border-b border-[var(--border-color)] text-[var(--text-color)]">
+                      {processedChapterTitle}
+                    </h2>
+
+                    {/* Paragraphs */}
+                    {processedParagraphs.map((para, i) => {
+                      const isSpeakingThis = tts.isPlaying && tts.currentParagraphIdx === i;
+                      return (
+                        <p
+                          key={i}
+                          className={`novel-content-paragraph leading-relaxed mb-4 text-justify transition-all duration-200 rounded-lg ${
+                            isSpeakingThis
+                              ? "bg-[var(--accent-color)]/20 px-2 py-1 shadow-sm font-medium"
+                              : ""
+                          }`}
+                          style={{ textIndent: isSpeakingThis ? "0" : "2em" }}
+                        >
+                          {isSpeakingThis && (
+                            <Volume2 className="w-4 h-4 inline-block mr-1.5 text-[var(--accent-color)] animate-pulse align-middle" />
+                          )}
+                          {para}
+                        </p>
+                      );
+                    })}
+
+                    {/* End of book marker if on last chapter */}
+                    {currentChapterIdx === chapters.length - 1 && (
+                      <div className="py-12 text-center text-xs text-[var(--text-muted)] space-y-2 border-t border-[var(--border-color)] mt-8">
+                        <p>—— 全文完 ——</p>
+                        <p>總字數：{totalChars.toLocaleString()} 字</p>
+                      </div>
+                    )}
+                  </article>
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
+      ) : (
+        /* Continuous Vertical Scroll Reading Viewport */
+        <main
+          ref={scrollContainerRef}
+          onScroll={handleContinuousScroll}
+          onClick={(e) => {
+            const y = e.clientY;
+            const h = window.innerHeight;
+            if (y > h * 0.25 && y < h * 0.75) {
+              setShowToolbar((prev) => !prev);
+            }
+          }}
+          className="flex-1 overflow-y-auto px-4 sm:px-8 pt-16 pb-24 select-text"
+        >
+          <div className={`mx-auto w-full ${maxWidthClass}`}>
+            {isLoading ? (
+              <div className="py-32 flex flex-col items-center justify-center space-y-4 text-[var(--text-muted)]">
+                <RefreshCw className="w-8 h-8 animate-spin" />
+                <p className="text-sm">正在載入小說內容...</p>
+              </div>
+            ) : (
+              <article
+                className={`select-text ${currentFontClass}`}
                 style={{
-                  width: viewportWidth > 0 ? `${viewportWidth}px` : "100%",
-                  columnWidth: viewportWidth > 0 ? `${viewportWidth}px` : "auto",
-                  columnGap: `${columnGap}px`,
-                  columnFill: "auto",
-                  transform:
-                    viewportWidth > 0
-                      ? `translateX(-${currentPage * (viewportWidth + columnGap)}px)`
-                      : "none",
                   fontSize: `${fontSize}px`,
                   lineHeight: lineHeight,
                   letterSpacing: "0.03em",
                 }}
               >
-                <article className={`select-text ${currentFontClass}`}>
-                  {/* Chapter Header */}
-                  <h2 className="text-xl sm:text-2xl font-bold mb-6 pb-3 border-b border-[var(--border-color)] text-[var(--text-color)]">
-                    {processedChapterTitle}
-                  </h2>
+                <h2 className="text-xl sm:text-2xl font-bold mb-6 pb-3 border-b border-[var(--border-color)] text-[var(--text-color)]">
+                  {processedChapterTitle}
+                </h2>
 
-                  {/* Paragraphs */}
-                  {processedParagraphs.map((para, i) => {
-                    const isSpeakingThis = tts.isPlaying && tts.currentParagraphIdx === i;
-                    return (
-                      <p
-                        key={i}
-                        className={`novel-content-paragraph leading-relaxed mb-4 text-justify transition-all duration-200 rounded-lg ${
-                          isSpeakingThis
-                            ? "bg-[var(--accent-color)]/20 px-2 py-1 shadow-sm font-medium"
-                            : ""
-                        }`}
-                        style={{ textIndent: isSpeakingThis ? "0" : "2em" }}
-                      >
-                        {isSpeakingThis && (
-                          <Volume2 className="w-4 h-4 inline-block mr-1.5 text-[var(--accent-color)] animate-pulse align-middle" />
-                        )}
-                        {para}
-                      </p>
-                    );
-                  })}
+                {processedParagraphs.map((para, i) => {
+                  const isSpeakingThis = tts.isPlaying && tts.currentParagraphIdx === i;
+                  return (
+                    <p
+                      key={i}
+                      className={`novel-content-paragraph leading-relaxed mb-4 text-justify transition-all duration-200 rounded-lg ${
+                        isSpeakingThis
+                          ? "bg-[var(--accent-color)]/20 px-2 py-1 shadow-sm font-medium"
+                          : ""
+                      }`}
+                      style={{ textIndent: isSpeakingThis ? "0" : "2em" }}
+                    >
+                      {isSpeakingThis && (
+                        <Volume2 className="w-4 h-4 inline-block mr-1.5 text-[var(--accent-color)] animate-pulse align-middle" />
+                      )}
+                      {para}
+                    </p>
+                  );
+                })}
 
-                  {/* End of book marker if on last chapter */}
-                  {currentChapterIdx === chapters.length - 1 && (
-                    <div className="py-12 text-center text-xs text-[var(--text-muted)] space-y-2 border-t border-[var(--border-color)] mt-8">
-                      <p>—— 全文完 ——</p>
-                      <p>總字數：{totalChars.toLocaleString()} 字</p>
-                    </div>
-                  )}
-                </article>
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
+                {/* Chapter Navigation Buttons in Continuous Mode */}
+                <div className="pt-8 pb-12 flex items-center justify-between border-t border-[var(--border-color)] mt-8 gap-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      goToPrevChapter();
+                      if (scrollContainerRef.current) {
+                        scrollContainerRef.current.scrollTop = 0;
+                      }
+                    }}
+                    disabled={currentChapterIdx <= 0}
+                    className="flex-1 py-3 rounded-xl border border-[var(--border-color)] disabled:opacity-30 hover:bg-[var(--card-bg)] text-xs font-semibold flex items-center justify-center space-x-1 transition-all"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>上一章</span>
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      goToNextChapter();
+                      if (scrollContainerRef.current) {
+                        scrollContainerRef.current.scrollTop = 0;
+                      }
+                    }}
+                    disabled={currentChapterIdx >= chapters.length - 1}
+                    className="flex-1 py-3 rounded-xl border border-[var(--border-color)] disabled:opacity-30 hover:bg-[var(--card-bg)] text-xs font-semibold flex items-center justify-center space-x-1 transition-all"
+                  >
+                    <span>下一章</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </article>
+            )}
+          </div>
+        </main>
+      )}
 
       {/* Bottom Floating Status Bar & Page Navigation */}
       <footer
@@ -1578,6 +1702,33 @@ export default function ReaderPage() {
                     {cv.name}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            {/* Reading Mode Selector (Paginated vs Continuous Scroll) */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-[var(--text-muted)]">閱讀翻頁模式</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => updateReadMode("paginated")}
+                  className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
+                    readMode === "paginated"
+                      ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm font-semibold"
+                      : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                  }`}
+                >
+                  左右分頁模式
+                </button>
+                <button
+                  onClick={() => updateReadMode("continuous")}
+                  className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
+                    readMode === "continuous"
+                      ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm font-semibold"
+                      : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                  }`}
+                >
+                  垂直連續滾動
+                </button>
               </div>
             </div>
 

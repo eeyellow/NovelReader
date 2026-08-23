@@ -39,17 +39,26 @@ export async function POST(req: NextRequest) {
 
     const originalName = file.name;
     const rawBuffer = Buffer.from(await file.arrayBuffer());
+    let text = "";
+    let detectedEncoding = "UTF-8";
+    let detectedTitle = originalName.replace(/\.[^/.]+$/, "").trim() || "未命名小說";
 
-    // Auto-detect encoding and convert to standard UTF-8 string
-    let { text, detectedEncoding } = decodeToUtf8(rawBuffer);
+    if (originalName.toLowerCase().endsWith(".epub")) {
+      const { parseEpub } = await import("@/lib/epub");
+      const parsedEpub = await parseEpub(rawBuffer);
+      text = parsedEpub.text;
+      if (parsedEpub.title && parsedEpub.title !== "未命名小說") {
+        detectedTitle = parsedEpub.title;
+      }
+      detectedEncoding = "EPUB/UTF-8";
+    } else {
+      // Auto-detect encoding and convert to standard UTF-8 string for TXT
+      const decoded = decodeToUtf8(rawBuffer);
+      text = decoded.text;
+      detectedEncoding = decoded.detectedEncoding;
+    }
 
-    // Check if simplified
-    const isSimplified = isSimplifiedChinese(text);
-
-    let sanitizedTitle =
-      titleOverride ||
-      originalName.replace(/\.[^/.]+$/, "").trim() ||
-      "未命名小說";
+    let sanitizedTitle = titleOverride || detectedTitle;
 
     // If requested, convert entire text and title to Traditional Chinese
     if (shouldConvertToTraditional) {

@@ -74,6 +74,11 @@ export default function BookshelfPage() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [showThemeMenu, setShowThemeMenu] = useState(false);
   const [rememberConversionChoice, setRememberConversionChoice] = useState(false);
+  const [showStorageModal, setShowStorageModal] = useState(false);
+  const [storageUsage, setStorageUsage] = useState(0);
+  const [storageQuota, setStorageQuota] = useState(0);
+  const [isCachingAll, setIsCachingAll] = useState(false);
+  const [cacheAllProgress, setCacheAllProgress] = useState<{ current: number; total: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
 
@@ -255,7 +260,68 @@ export default function BookshelfPage() {
     setLocalProgress(progMap);
   };
 
-  // Check file encoding & Simplified Chinese before uploading
+  // Fetch device storage usage
+  const fetchStorageInfo = async () => {
+    if (typeof navigator !== "undefined" && navigator.storage && navigator.storage.estimate) {
+      try {
+        const est = await navigator.storage.estimate();
+        setStorageUsage(est.usage || 0);
+        setStorageQuota(est.quota || 0);
+      } catch (e) {
+        console.warn("Storage estimate error:", e);
+      }
+    }
+  };
+
+  // One-click cache all books offline
+  const handleCacheAllBooks = async () => {
+    const uncached = books.filter((b) => !cachedStatus[b.id]);
+    if (uncached.length === 0) {
+      alert("所有書籍均已離線快取！");
+      return;
+    }
+
+    setIsCachingAll(true);
+    setCacheAllProgress({ current: 0, total: uncached.length });
+
+    for (let i = 0; i < uncached.length; i++) {
+      const book = uncached[i];
+      try {
+        const res = await fetch(`/api/books/${book.id}/content`);
+        if (res.ok) {
+          const text = await res.text();
+          await LocalStore.saveBookContent(book.id, book.title, text, book.total_chars);
+          setCachedStatus((prev) => ({ ...prev, [book.id]: true }));
+        }
+      } catch (e) {
+        console.warn(`Failed to cache ${book.title}:`, e);
+      }
+      setCacheAllProgress({ current: i + 1, total: uncached.length });
+    }
+
+    setIsCachingAll(false);
+    setCacheAllProgress(null);
+    fetchStorageInfo();
+  };
+
+  // Clear all local book text cache
+  const handleClearAllCaches = async () => {
+    if (!confirm("確定要清除所有本機離線快取的小說文本嗎？（這不會刪除雲端書籍與閱讀進度）")) {
+      return;
+    }
+    for (const book of books) {
+      await LocalStore.deleteBookContent(book.id);
+    }
+    const newStatus: Record<string, boolean> = {};
+    books.forEach((b) => {
+      newStatus[b.id] = false;
+    });
+    setCachedStatus(newStatus);
+    fetchStorageInfo();
+    alert("已成功清除所有本機快取！");
+  };
+
+  // Check file encoding & Simplified Chinese before uploading (Supports TXT & EPUB)
   const handleFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const file = files[0];
@@ -265,12 +331,20 @@ export default function BookshelfPage() {
       fileInputRef.current.value = "";
     }
 
-    if (!file.name.toLowerCase().endsWith(".txt")) {
-      alert("目前僅支援 .txt 格式純文字小說");
+    const isTxt = file.name.toLowerCase().endsWith(".txt");
+    const isEpub = file.name.toLowerCase().endsWith(".epub");
+
+    if (!isTxt && !isEpub) {
+      alert("目前支援 .txt 與 .epub 格式小說");
       return;
     }
 
-    // Sample the first 128KB to detect encoding and Simplified Chinese
+    if (isEpub) {
+      uploadFile(file, false);
+      return;
+    }
+
+    // Sample the first 128KB to detect encoding and Simplified Chinese for TXT
     try {
       const slice = file.slice(0, 131072);
       const arrayBuf = await slice.arrayBuffer();
@@ -292,8 +366,11 @@ export default function BookshelfPage() {
 
   const uploadFile = async (file: File, convertToTraditional: boolean) => {
     setIsUploading(true);
+    const isEpub = file.name.toLowerCase().endsWith(".epub");
     setUploadStatus(
-      convertToTraditional
+      isEpub
+        ? "正在解析 EPUB 電子書結構並同步至伺服器..."
+        : convertToTraditional
         ? "正在將簡體轉換為正體並同步至 NAS..."
         : "正在解析編碼並同步至 NAS..."
     );
@@ -637,6 +714,18 @@ export default function BookshelfPage() {
             )}
           </div>
 
+          {/* Storage & Offline Cache Manager */}
+          <button
+            onClick={() => {
+              fetchStorageInfo();
+              setShowStorageModal(true);
+            }}
+            className="p-2 rounded-lg border border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-color)] hover:border-[var(--accent-color)] transition-colors"
+            title="離線儲存空間與快取管理"
+          >
+            <HardDrive className="w-4 h-4" />
+          </button>
+
           {/* Refresh button */}
           <button
             onClick={fetchBooks}
@@ -670,7 +759,7 @@ export default function BookshelfPage() {
             <input
               type="file"
               ref={fileInputRef}
-              accept=".txt,text/plain"
+              accept=".txt,.epub,text/plain,application/epub+zip"
               className="hidden"
               onChange={(e) => handleFileSelect(e.target.files)}
             />
@@ -680,10 +769,10 @@ export default function BookshelfPage() {
               </div>
               <div>
                 <p className="font-semibold text-sm sm:text-base">
-                  {isUploading ? uploadStatus : "點擊或拖曳 .TXT 小說上傳"}
+                  {isUploading ? uploadStatus : "點擊或拖曳 .TXT / .EPUB 小說上傳"}
                 </p>
                 <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                  自動識別 UTF-8、Big5、GBK 編碼並同步至 NAS 私有雲
+                  自動識別 UTF-8、Big5、GBK 及 EPUB 結構並同步至私有雲
                 </p>
               </div>
             </div>
@@ -1149,6 +1238,100 @@ export default function BookshelfPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Storage & Offline Cache Management Modal */}
+      {showStorageModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="p-2 rounded-xl bg-[var(--accent-color)]/15 text-[var(--accent-color)]">
+                  <HardDrive className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base">離線空間與快取管理</h3>
+                  <p className="text-xs text-[var(--text-muted)]">管理瀏覽器 IndexedDB 離線數據</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowStorageModal(false)}
+                className="text-[var(--text-muted)] hover:text-[var(--text-color)] p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Storage Usage Bar */}
+            <div className="p-4 rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-[var(--text-muted)]">本機已用空間</span>
+                <span className="font-bold">
+                  {formatSize(storageUsage)} / {storageQuota > 0 ? formatSize(storageQuota) : "未知"}
+                </span>
+              </div>
+              {storageQuota > 0 && (
+                <div className="w-full bg-[var(--border-color)] h-2 rounded-full overflow-hidden">
+                  <div
+                    className="bg-[var(--accent-color)] h-full transition-all duration-300"
+                    style={{
+                      width: `${Math.min(100, Math.max(1, (storageUsage / storageQuota) * 100))}%`,
+                    }}
+                  />
+                </div>
+              )}
+              <div className="flex justify-between items-center text-[11px] text-[var(--text-muted)] pt-1">
+                <span>離線快取狀態</span>
+                <span>
+                  {Object.values(cachedStatus).filter(Boolean).length} / {books.length} 本書籍已快取
+                </span>
+              </div>
+            </div>
+
+            {/* Cache All Progress Banner */}
+            {isCachingAll && cacheAllProgress && (
+              <div className="p-3.5 rounded-xl bg-[var(--accent-color)]/10 border border-[var(--accent-color)]/30 space-y-1.5 animate-pulse">
+                <div className="flex items-center justify-between text-xs font-semibold text-[var(--accent-color)]">
+                  <span>正在下載全部小說離線快取...</span>
+                  <span>{cacheAllProgress.current} / {cacheAllProgress.total}</span>
+                </div>
+                <div className="w-full bg-[var(--border-color)] h-1.5 rounded-full overflow-hidden">
+                  <div
+                    className="bg-[var(--accent-color)] h-full transition-all duration-200"
+                    style={{
+                      width: `${(cacheAllProgress.current / cacheAllProgress.total) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="space-y-2.5 pt-1">
+              <button
+                onClick={handleCacheAllBooks}
+                disabled={isCachingAll || books.length === 0}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold bg-[var(--accent-color)] text-white shadow-sm hover:opacity-90 disabled:opacity-50 transition-all flex items-center justify-center space-x-2"
+              >
+                <DownloadCloud className="w-4 h-4" />
+                <span>
+                  {isCachingAll
+                    ? "正在背景快取中..."
+                    : "一鍵下載快取全書庫（離線完全可用）"}
+                </span>
+              </button>
+
+              <button
+                onClick={handleClearAllCaches}
+                disabled={isCachingAll}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-medium border border-red-500/30 text-red-500 hover:bg-red-500/10 transition-colors flex items-center justify-center space-x-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>清除本機小說文本快取（釋放空間）</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
