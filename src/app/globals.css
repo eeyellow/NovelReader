@@ -93,7 +93,24 @@ body {
   background: rgba(140, 140, 140, 0.45);
 }
 
-/* Reader Text Container */
+/* iOS Safe Area Insets & Reader Performance Isolation */
+.safe-area-top {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+
+.safe-area-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.safe-area-left {
+  padding-left: max(1rem, env(safe-area-inset-left));
+}
+
+.safe-area-right {
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+
+/* Reader Text Container - Performance Isolated */
 .novel-content-paragraph {
   text-indent: 2em;
   margin-bottom: 1em;
@@ -101,5 +118,7 @@ body {
   text-align: justify;
   text-justify: inter-ideograph;
   break-inside: auto;
+  contain: layout style;
 }
+
 

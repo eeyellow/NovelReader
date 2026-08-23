@@ -107,7 +107,7 @@ export function syncProgress(
     return;
   }
 
-  // 3. Debounce background sync (2.5 seconds)
+  // 3. Debounce background sync (3 seconds) to reduce radio wakeups
   syncTimeout = setTimeout(async () => {
     if (Math.abs(charOffset - lastSyncedOffset) > 10) {
       const result = await sendProgressToServer(payload, false);
@@ -124,5 +124,46 @@ export function syncProgress(
         );
       }
     }
-  }, 2500);
+  }, 3000);
 }
+
+/**
+ * Flushes all pending unsynced reading progress records stored in IndexedDB to the server
+ */
+export async function flushUnsyncedProgress(): Promise<void> {
+  if (typeof window === "undefined" || !navigator.onLine) return;
+
+  try {
+    const unsynced = await LocalStore.getAllUnsyncedProgress();
+    for (const item of unsynced) {
+      const res = await sendProgressToServer(
+        {
+          book_id: item.book_id,
+          char_offset: item.char_offset,
+          percentage: item.percentage,
+          chapter_index: item.chapter_index,
+          page_index: item.page_index,
+          page_ratio: item.page_ratio,
+          total_pages: item.total_pages,
+          device_name: item.device_name,
+          updated_at: item.updated_at,
+        },
+        false
+      );
+
+      if (res.success) {
+        await LocalStore.markProgressSynced(item.book_id);
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to flush unsynced progress:", e);
+  }
+}
+
+// Auto-register online listener to flush sync queue
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => {
+    flushUnsyncedProgress().catch(console.warn);
+  });
+}
+

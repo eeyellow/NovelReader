@@ -32,11 +32,10 @@ import { LocalStore } from "@/lib/idb";
 import { extractChapters, Chapter, findCurrentChapter } from "@/lib/parser";
 import { syncProgress } from "@/lib/sync";
 import { GestureAction, GestureConfig } from "@/lib/gesture/types";
-import {
-  DEFAULT_GESTURE_CONFIG,
-  loadGestureConfig,
-} from "@/lib/gesture/defaultGestures";
+import { DEFAULT_GESTURE_CONFIG, loadGestureConfig } from "@/lib/gesture/defaultGestures";
 import { useMouseGesture } from "@/hooks/useMouseGesture";
+import { useTouchGesture } from "@/hooks/useTouchGesture";
+import { useWakeLock } from "@/hooks/useWakeLock";
 import { GestureOverlay } from "@/components/gesture/GestureOverlay";
 import { GestureSettingsModal } from "@/components/gesture/GestureSettingsModal";
 
@@ -99,12 +98,20 @@ export default function ReaderPage() {
   // Viewport & column measurement refs
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const readerMainRef = useRef<HTMLElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const pendingPageRef = useRef<"first" | "last" | null>(null);
   const pendingTargetOffset = useRef<number | null>(null);
   const pendingTargetPageRatio = useRef<number | null>(null);
   const pendingTargetPageIndex = useRef<number | null>(null);
   const isRestoringProgress = useRef<boolean>(true);
+
+  // Scrubber state
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [scrubPage, setScrubPage] = useState(0);
+
+  // Smart Screen Wake Lock for mobile power efficiency
+  const { onUserActivity } = useWakeLock({ enabled: !isLoading });
 
   const columnGap = 36; // px
 
@@ -379,15 +386,21 @@ export default function ReaderPage() {
     measurePagination,
   ]);
 
-  // Resize observer to handle window resizing
+  // Resize observer to handle window resizing & orientation change without drifting
   useEffect(() => {
     if (!viewportRef.current) return;
     const observer = new ResizeObserver(() => {
+      if (currentChapter && totalPages > 0 && !isRestoringProgress.current) {
+        const chStart = currentChapter.charOffset;
+        const chLen = currentChapter.length || 0;
+        const pageRatio = totalPages > 0 ? currentPage / totalPages : 0;
+        pendingTargetOffset.current = Math.round(chStart + pageRatio * chLen);
+      }
       measurePagination();
     });
     observer.observe(viewportRef.current);
     return () => observer.disconnect();
-  }, [measurePagination]);
+  }, [measurePagination, currentChapter, totalPages, currentPage]);
 
   // Update current character offset & sync progress on page change
   useEffect(() => {
@@ -660,6 +673,37 @@ export default function ReaderPage() {
     ]
   );
 
+  // Mobile Touch Gestures (Swipe to turn page, Pinch to zoom font, Tap zones with haptic)
+  useTouchGesture({
+    elementRef: readerMainRef,
+    onSwipeLeft: () => {
+      onUserActivity();
+      clickDirection === "inverted" ? goToPrevPage() : goToNextPage();
+    },
+    onSwipeRight: () => {
+      onUserActivity();
+      clickDirection === "inverted" ? goToNextPage() : goToPrevPage();
+    },
+    onPinchZoom: (delta) => {
+      onUserActivity();
+      updateFontSize(delta);
+    },
+    onTap: (clientX) => {
+      onUserActivity();
+      const selection = window.getSelection();
+      if (selection && selection.toString().length > 0) return;
+      const xRatio = clientX / window.innerWidth;
+      if (xRatio < 0.28) {
+        clickDirection === "inverted" ? goToNextPage() : goToPrevPage();
+      } else if (xRatio > 0.72) {
+        clickDirection === "inverted" ? goToPrevPage() : goToNextPage();
+      } else {
+        setShowToolbar((prev) => !prev);
+      }
+    },
+    enabled: !isLoading,
+  });
+
   const gestureState = useMouseGesture({
     config: gestureConfig,
     onAction: handleGestureAction,
@@ -680,7 +724,7 @@ export default function ReaderPage() {
     <div className="relative h-screen w-screen overflow-hidden flex flex-col select-text bg-[var(--bg-color)] text-[var(--text-color)]">
       {/* Top Floating Navigation Toolbar */}
       <header
-        className={`fixed top-0 inset-x-0 z-40 transition-transform duration-300 backdrop-blur-md bg-[var(--header-bg)] border-b border-[var(--border-color)] px-4 py-2.5 flex items-center justify-between shadow-sm ${
+        className={`fixed top-0 inset-x-0 z-40 transition-transform duration-300 backdrop-blur-md bg-[var(--header-bg)] border-b border-[var(--border-color)] px-4 py-2.5 safe-area-top flex items-center justify-between shadow-sm ${
           showToolbar ? "translate-y-0" : "-translate-y-full"
         }`}
       >
@@ -776,24 +820,8 @@ export default function ReaderPage() {
 
       {/* Main Multi-Column Paginated Reading Viewport */}
       <main
-        onClick={(e) => {
-          // 若有反白選取文字則不觸發點擊翻頁
-          const selection = window.getSelection();
-          if (selection && selection.toString().length > 0) {
-            return;
-          }
-          // Screen click zones:
-          // Left 28% | Middle 44% (Toggle Toolbar) | Right 28%
-          const xRatio = e.clientX / window.innerWidth;
-          if (xRatio < 0.28) {
-            clickDirection === "inverted" ? goToNextPage() : goToPrevPage();
-          } else if (xRatio > 0.72) {
-            clickDirection === "inverted" ? goToPrevPage() : goToNextPage();
-          } else {
-            setShowToolbar((prev) => !prev);
-          }
-        }}
-        className="flex-1 overflow-hidden relative flex flex-col justify-center px-4 sm:px-8 py-14"
+        ref={readerMainRef}
+        className="flex-1 overflow-hidden relative flex flex-col justify-center px-4 sm:px-8 py-14 select-text"
       >
         <div className={`mx-auto w-full h-full ${maxWidthClass} relative overflow-hidden`}>
           {isLoading ? (
@@ -853,28 +881,61 @@ export default function ReaderPage() {
 
       {/* Bottom Floating Status Bar & Page Navigation */}
       <footer
-        className={`fixed bottom-0 inset-x-0 z-40 transition-transform duration-300 backdrop-blur-md bg-[var(--header-bg)] border-t border-[var(--border-color)] px-4 py-2.5 shadow-lg ${
+        className={`fixed bottom-0 inset-x-0 z-40 transition-transform duration-300 backdrop-blur-md bg-[var(--header-bg)] border-t border-[var(--border-color)] px-4 py-2.5 safe-area-bottom shadow-lg ${
           showToolbar ? "translate-y-0" : "translate-y-full"
         }`}
       >
         <div className="max-w-2xl mx-auto space-y-2">
+          {/* Quick Progress Scrubber Slider */}
+          <div className="flex items-center space-x-3 px-1">
+            <span className="text-[11px] text-[var(--text-muted)] font-mono shrink-0">1</span>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, totalPages - 1)}
+              value={isScrubbing ? scrubPage : currentPage}
+              onInput={(e) => {
+                setIsScrubbing(true);
+                setScrubPage(Number((e.target as HTMLInputElement).value));
+                onUserActivity();
+              }}
+              onChange={(e) => {
+                const targetP = Number(e.target.value);
+                setCurrentPage(targetP);
+                setIsScrubbing(false);
+                onUserActivity();
+              }}
+              className="w-full h-1.5 bg-[var(--border-color)] rounded-lg appearance-none cursor-pointer accent-[var(--accent-color)]"
+              aria-label="章節進度滑桿"
+            />
+            <span className="text-[11px] text-[var(--text-muted)] font-mono shrink-0">
+              {totalPages}
+            </span>
+          </div>
+
           {/* Page & Chapter Turn Buttons */}
           <div className="flex items-center justify-between gap-2 text-xs">
             <div className="flex items-center space-x-1">
               <button
-                onClick={goToPrevChapter}
+                onClick={() => {
+                  onUserActivity();
+                  goToPrevChapter();
+                }}
                 disabled={currentChapterIdx <= 0}
                 className="p-1.5 rounded-lg border border-[var(--border-color)] disabled:opacity-30 hover:bg-[var(--card-bg)] transition-all flex items-center"
-                title="上一章 (手勢: ⬆️)"
+                title="上一章"
               >
                 <ChevronFirst className="w-4 h-4" />
                 <span className="hidden sm:inline ml-1 text-[11px]">上一章</span>
               </button>
               <button
-                onClick={goToPrevPage}
+                onClick={() => {
+                  onUserActivity();
+                  goToPrevPage();
+                }}
                 disabled={currentChapterIdx === 0 && currentPage === 0}
                 className="p-1.5 rounded-lg border border-[var(--border-color)] disabled:opacity-30 hover:bg-[var(--card-bg)] transition-all flex items-center"
-                title="上一頁 (手勢: ⬅️)"
+                title="上一頁"
               >
                 <ChevronLeft className="w-4 h-4" />
                 <span className="hidden sm:inline ml-1 text-[11px]">上一頁</span>
@@ -893,21 +954,27 @@ export default function ReaderPage() {
 
             <div className="flex items-center space-x-1">
               <button
-                onClick={goToNextPage}
+                onClick={() => {
+                  onUserActivity();
+                  goToNextPage();
+                }}
                 disabled={
                   currentChapterIdx >= chapters.length - 1 && currentPage >= totalPages - 1
                 }
                 className="p-1.5 rounded-lg border border-[var(--border-color)] disabled:opacity-30 hover:bg-[var(--card-bg)] transition-all flex items-center"
-                title="下一頁 (手勢: ➡️)"
+                title="下一頁"
               >
                 <span className="hidden sm:inline mr-1 text-[11px]">下一頁</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
               <button
-                onClick={goToNextChapter}
+                onClick={() => {
+                  onUserActivity();
+                  goToNextChapter();
+                }}
                 disabled={currentChapterIdx >= chapters.length - 1}
                 className="p-1.5 rounded-lg border border-[var(--border-color)] disabled:opacity-30 hover:bg-[var(--card-bg)] transition-all flex items-center"
-                title="下一章 (手勢: ⬇️)"
+                title="下一章"
               >
                 <span className="hidden sm:inline mr-1 text-[11px]">下一章</span>
                 <ChevronLast className="w-4 h-4" />

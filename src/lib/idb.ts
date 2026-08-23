@@ -152,6 +152,23 @@ export const LocalStore = {
     return await db.get("local_progress", bookId);
   },
 
+  async getAllUnsyncedProgress() {
+    const db = await getLocalDB();
+    if (!db) return [];
+    const all = await db.getAll("local_progress");
+    return all.filter((p) => !p.synced);
+  },
+
+  async markProgressSynced(bookId: string) {
+    const db = await getLocalDB();
+    if (!db) return;
+    const existing = await db.get("local_progress", bookId);
+    if (existing) {
+      existing.synced = true;
+      await db.put("local_progress", existing);
+    }
+  },
+
   async getSetting<T>(key: string, defaultValue: T): Promise<T> {
     const db = await getLocalDB();
     if (!db) return defaultValue;
