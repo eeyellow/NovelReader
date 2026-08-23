@@ -27,15 +27,29 @@ import {
   MousePointerClick,
   ChevronFirst,
   ChevronLast,
+  Volume2,
+  VolumeX,
+  Play,
+  Pause,
+  SkipForward,
+  SkipBack,
+  BookmarkPlus,
+  Bookmark,
+  Search,
+  Check,
+  Trash2,
 } from "lucide-react";
 import { LocalStore } from "@/lib/idb";
+import { Bookmark as BookmarkType } from "@/lib/db";
 import { extractChapters, Chapter, findCurrentChapter } from "@/lib/parser";
 import { syncProgress } from "@/lib/sync";
+import { convertToTraditional, convertToSimplified } from "@/lib/chinese";
 import { GestureAction, GestureConfig } from "@/lib/gesture/types";
 import { DEFAULT_GESTURE_CONFIG, loadGestureConfig } from "@/lib/gesture/defaultGestures";
 import { useMouseGesture } from "@/hooks/useMouseGesture";
 import { useTouchGesture } from "@/hooks/useTouchGesture";
 import { useWakeLock } from "@/hooks/useWakeLock";
+import { useTTS } from "@/hooks/useTTS";
 import { GestureOverlay } from "@/components/gesture/GestureOverlay";
 import { GestureSettingsModal } from "@/components/gesture/GestureSettingsModal";
 
@@ -77,12 +91,30 @@ export default function ReaderPage() {
   const [fontFamily, setFontFamily] = useState("serif");
   const [maxWidthMode, setMaxWidthMode] = useState<"narrow" | "normal" | "wide">("normal");
   const [clickDirection, setClickDirection] = useState<"standard" | "inverted">("standard");
+  const [chineseVariant, setChineseVariant] = useState<"original" | "traditional" | "simplified">("original");
 
   // UI state
   const [showToolbar, setShowToolbar] = useState(true);
   const [showTOC, setShowTOC] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [activeDrawerTab, setActiveDrawerTab] = useState<"chapters" | "bookmarks">("chapters");
+  const [bookmarks, setBookmarks] = useState<BookmarkType[]>([]);
+  const [showSearchModal, setShowSearchModal] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<
+    Array<{
+      chapterIndex: number;
+      chapterTitle: string;
+      charOffset: number;
+      snippetBefore: string;
+      matchText: string;
+      snippetAfter: string;
+    }>
+  >([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showTTSPlayer, setShowTTSPlayer] = useState(false);
+  const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
 
   // Gesture state
   const [gestureConfig, setGestureConfig] = useState<GestureConfig>(DEFAULT_GESTURE_CONFIG);
@@ -112,6 +144,22 @@ export default function ReaderPage() {
 
   // Smart Screen Wake Lock for mobile power efficiency
   const { onUserActivity } = useWakeLock({ enabled: !isLoading });
+
+  // Web Speech API Text-to-Speech Hook
+  const tts = useTTS({
+    onParagraphChange: () => {
+      onUserActivity();
+    },
+    onPageEnd: () => {
+      if (currentPage < totalPages - 1) {
+        goToNextPage();
+      } else if (currentChapterIdx < chapters.length - 1) {
+        goToNextChapter();
+      } else {
+        tts.stop();
+      }
+    },
+  });
 
   const columnGap = 36; // px
 
@@ -221,6 +269,9 @@ export default function ReaderPage() {
     const parsedChapters = extractChapters(bookText);
     setChapters(parsedChapters);
 
+    // 載入書籤
+    loadBookmarks(bookId);
+
     // 3. 取得本機閱讀進度並立刻完成畫面載入
     let targetOffset = 0;
     let targetChapterIdx = 0;
@@ -284,6 +335,135 @@ export default function ReaderPage() {
     }
   };
 
+  // Load bookmarks
+  const loadBookmarks = async (targetBookId: string) => {
+    try {
+      const localBMs = await LocalStore.getBookmarks(targetBookId);
+      if (localBMs && localBMs.length > 0) {
+        setBookmarks(localBMs);
+      }
+      const res = await fetch(`/api/bookmarks?bookId=${targetBookId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.bookmarks)) {
+          setBookmarks(data.bookmarks);
+          for (const bm of data.bookmarks) {
+            await LocalStore.saveBookmark(bm);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Error loading bookmarks:", e);
+    }
+  };
+
+  // Add bookmark
+  const handleAddBookmark = async () => {
+    onUserActivity();
+    if (!bookId || !currentChapter) return;
+    const preview = currentChapterParagraphs[0]?.slice(0, 60) || currentChapter.title;
+    const bmTitle = `${currentChapter.title} (第 ${currentPage + 1} 頁)`;
+
+    const bmId = `bm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const newBookmark: BookmarkType = {
+      id: bmId,
+      book_id: bookId,
+      char_offset: currentOffset,
+      title: bmTitle,
+      preview_text: preview,
+      created_at: new Date().toISOString(),
+    };
+
+    await LocalStore.saveBookmark(newBookmark);
+    setBookmarks((prev) => [newBookmark, ...prev]);
+    setBookmarkToast("已成功加入書籤！");
+    setTimeout(() => setBookmarkToast(null), 2200);
+
+    try {
+      await fetch("/api/bookmarks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newBookmark),
+      });
+    } catch (e) {
+      console.warn("Failed to sync bookmark to server:", e);
+    }
+  };
+
+  // Delete bookmark
+  const handleDeleteBookmark = async (e: React.MouseEvent, bmId: string) => {
+    e.stopPropagation();
+    onUserActivity();
+    await LocalStore.deleteBookmark(bmId);
+    setBookmarks((prev) => prev.filter((b) => b.id !== bmId));
+    try {
+      await fetch(`/api/bookmarks?id=${bmId}`, { method: "DELETE" });
+    } catch (e) {
+      console.warn("Failed to delete bookmark on server:", e);
+    }
+  };
+
+  // Jump to bookmark
+  const jumpToBookmark = (bm: BookmarkType) => {
+    onUserActivity();
+    const chIdx = findCurrentChapter(chapters, bm.char_offset);
+    setCurrentChapterIdx(chIdx);
+    pendingTargetOffset.current = bm.char_offset;
+    setShowTOC(false);
+  };
+
+  // In-Book Full-Text Search
+  const performSearch = (query: string) => {
+    if (!query.trim() || !fullText) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    const q = query.trim();
+    const results: Array<{
+      chapterIndex: number;
+      chapterTitle: string;
+      charOffset: number;
+      snippetBefore: string;
+      matchText: string;
+      snippetAfter: string;
+    }> = [];
+    let pos = 0;
+    const lowerFull = fullText.toLowerCase();
+    const lowerQ = q.toLowerCase();
+
+    while (results.length < 80) {
+      const matchIdx = lowerFull.indexOf(lowerQ, pos);
+      if (matchIdx === -1) break;
+
+      const chIdx = findCurrentChapter(chapters, matchIdx);
+      const chTitle = chapters[chIdx]?.title || "正文";
+      const snippetStart = Math.max(0, matchIdx - 22);
+      const snippetEnd = Math.min(fullText.length, matchIdx + q.length + 30);
+
+      results.push({
+        chapterIndex: chIdx,
+        chapterTitle: chTitle,
+        charOffset: matchIdx,
+        snippetBefore: fullText.slice(snippetStart, matchIdx),
+        matchText: fullText.slice(matchIdx, matchIdx + q.length),
+        snippetAfter: fullText.slice(matchIdx + q.length, snippetEnd),
+      });
+
+      pos = matchIdx + Math.max(1, q.length);
+    }
+    setSearchResults(results);
+    setIsSearching(false);
+  };
+
+  // Jump from search result
+  const jumpToSearchResult = (result: { chapterIndex: number; charOffset: number }) => {
+    onUserActivity();
+    setCurrentChapterIdx(result.chapterIndex);
+    pendingTargetOffset.current = result.charOffset;
+    setShowSearchModal(false);
+  };
+
   // Get current chapter text and paragraphs
   const currentChapter = useMemo(() => {
     return chapters[currentChapterIdx] || null;
@@ -300,6 +480,25 @@ export default function ReaderPage() {
     if (!currentChapterText) return [];
     return currentChapterText.split(/\r?\n/).filter((p) => p.trim().length > 0);
   }, [currentChapterText]);
+
+  // On-the-fly Dynamic Traditional/Simplified Conversion
+  const processedChapterTitle = useMemo(() => {
+    if (!currentChapter?.title) return "正文";
+    if (chineseVariant === "traditional") return convertToTraditional(currentChapter.title);
+    if (chineseVariant === "simplified") return convertToSimplified(currentChapter.title);
+    return currentChapter.title;
+  }, [currentChapter?.title, chineseVariant]);
+
+  const processedParagraphs = useMemo(() => {
+    if (!currentChapterParagraphs || currentChapterParagraphs.length === 0) return [];
+    if (chineseVariant === "traditional") {
+      return currentChapterParagraphs.map((p) => convertToTraditional(p));
+    }
+    if (chineseVariant === "simplified") {
+      return currentChapterParagraphs.map((p) => convertToSimplified(p));
+    }
+    return currentChapterParagraphs;
+  }, [currentChapterParagraphs, chineseVariant]);
 
   // Recalculate multi-column pagination pages
   const measurePagination = useCallback(() => {
@@ -378,7 +577,7 @@ export default function ReaderPage() {
     return () => clearTimeout(timer);
   }, [
     currentChapterIdx,
-    currentChapterParagraphs,
+    processedParagraphs,
     fontSize,
     lineHeight,
     fontFamily,
@@ -739,16 +938,49 @@ export default function ReaderPage() {
           <div className="truncate">
             <h1 className="text-sm font-bold truncate">{title}</h1>
             <p className="text-[11px] text-[var(--text-muted)] truncate">
-              {currentChapter?.title || "閱讀中"}
+              {processedChapterTitle}
             </p>
           </div>
         </div>
 
         <div className="flex items-center space-x-1 shrink-0">
           <button
+            onClick={() => setShowSearchModal(true)}
+            className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
+            title="書內全文檢索"
+            aria-label="搜尋內文"
+          >
+            <Search className="w-5 h-5" />
+          </button>
+          <button
+            onClick={handleAddBookmark}
+            className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
+            title="加入書籤"
+            aria-label="加入書籤"
+          >
+            <BookmarkPlus className="w-5 h-5" />
+          </button>
+          <button
+            onClick={() => {
+              setShowTTSPlayer((prev) => !prev);
+              if (!showTTSPlayer && !tts.isPlaying) {
+                tts.startReading(processedParagraphs, 0);
+              }
+            }}
+            className={`p-2 rounded-xl transition-colors ${
+              showTTSPlayer
+                ? "bg-[var(--accent-color)] text-white shadow-sm"
+                : "text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)]"
+            }`}
+            title="語音朗讀 (TTS)"
+            aria-label="語音朗讀"
+          >
+            <Volume2 className="w-5 h-5" />
+          </button>
+          <button
             onClick={() => setShowTOC(!showTOC)}
             className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
-            title="目錄章節"
+            title="目錄與書籤"
           >
             <List className="w-5 h-5" />
           </button>
@@ -775,6 +1007,14 @@ export default function ReaderPage() {
           </button>
         </div>
       </header>
+
+      {/* Bookmark Added Toast */}
+      {bookmarkToast && (
+        <div className="fixed top-16 inset-x-0 mx-auto w-fit z-50 bg-[var(--accent-color)] text-white text-xs font-semibold px-4 py-2 rounded-full shadow-lg flex items-center space-x-1.5 animate-bounce-short">
+          <Check className="w-4 h-4" />
+          <span>{bookmarkToast}</span>
+        </div>
+      )}
 
       {/* Cloud Conflict Prompt Toast */}
       {conflictPrompt && (
@@ -851,19 +1091,29 @@ export default function ReaderPage() {
                 <article className={`select-text ${currentFontClass}`}>
                   {/* Chapter Header */}
                   <h2 className="text-xl sm:text-2xl font-bold mb-6 pb-3 border-b border-[var(--border-color)] text-[var(--text-color)]">
-                    {currentChapter?.title || "正文"}
+                    {processedChapterTitle}
                   </h2>
 
                   {/* Paragraphs */}
-                  {currentChapterParagraphs.map((para, i) => (
-                    <p
-                      key={i}
-                      className="novel-content-paragraph leading-relaxed mb-4 text-justify"
-                      style={{ textIndent: "2em" }}
-                    >
-                      {para}
-                    </p>
-                  ))}
+                  {processedParagraphs.map((para, i) => {
+                    const isSpeakingThis = tts.isPlaying && tts.currentParagraphIdx === i;
+                    return (
+                      <p
+                        key={i}
+                        className={`novel-content-paragraph leading-relaxed mb-4 text-justify transition-all duration-200 rounded-lg ${
+                          isSpeakingThis
+                            ? "bg-[var(--accent-color)]/20 px-2 py-1 shadow-sm font-medium"
+                            : ""
+                        }`}
+                        style={{ textIndent: isSpeakingThis ? "0" : "2em" }}
+                      >
+                        {isSpeakingThis && (
+                          <Volume2 className="w-4 h-4 inline-block mr-1.5 text-[var(--accent-color)] animate-pulse align-middle" />
+                        )}
+                        {para}
+                      </p>
+                    );
+                  })}
 
                   {/* End of book marker if on last chapter */}
                   {currentChapterIdx === chapters.length - 1 && (
@@ -985,7 +1235,7 @@ export default function ReaderPage() {
           {/* Quick Info */}
           <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)] pt-0.5">
             <span className="truncate max-w-[200px]">
-              {currentChapter?.title || "正文"}
+              {processedChapterTitle}
             </span>
             <span>
               {currentOffset.toLocaleString()} / {totalChars.toLocaleString()} 字
@@ -994,14 +1244,195 @@ export default function ReaderPage() {
         </div>
       </footer>
 
-      {/* Table of Contents Drawer */}
+      {/* Floating TTS Player Widget */}
+      {showTTSPlayer && (
+        <div className="fixed bottom-20 inset-x-4 sm:inset-x-auto sm:right-6 z-40 max-w-sm bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl p-3.5 shadow-2xl backdrop-blur-md animate-fade-in space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <div className="p-1.5 rounded-lg bg-[var(--accent-color)]/15 text-[var(--accent-color)]">
+                <Volume2 className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-xs font-bold">語音朗讀中</p>
+                <p className="text-[10px] text-[var(--text-muted)]">
+                  {tts.currentParagraphIdx >= 0
+                    ? `第 ${tts.currentParagraphIdx + 1} / ${processedParagraphs.length} 段`
+                    : "就緒"}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                tts.stop();
+                setShowTTSPlayer(false);
+              }}
+              className="text-[var(--text-muted)] hover:text-[var(--text-color)] p-1 rounded-lg"
+              title="關閉朗讀"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Controls */}
+          <div className="flex items-center justify-between pt-1 border-t border-[var(--border-color)]/60 gap-1">
+            <div className="flex items-center space-x-1">
+              <button
+                onClick={() => tts.prevParagraph()}
+                className="p-1.5 rounded-lg hover:bg-[var(--bg-color)] text-[var(--text-color)]"
+                title="上一段"
+              >
+                <SkipBack className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  if (tts.isPlaying && !tts.isPaused) {
+                    tts.pause();
+                  } else if (tts.isPaused) {
+                    tts.resume();
+                  } else {
+                    tts.startReading(processedParagraphs, 0);
+                  }
+                }}
+                className="p-2 rounded-xl bg-[var(--accent-color)] text-white shadow-sm hover:opacity-90 transition-opacity"
+                title={tts.isPlaying && !tts.isPaused ? "暫停" : "播放"}
+              >
+                {tts.isPlaying && !tts.isPaused ? (
+                  <Pause className="w-4 h-4" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+              </button>
+              <button
+                onClick={() => tts.nextParagraph()}
+                className="p-1.5 rounded-lg hover:bg-[var(--bg-color)] text-[var(--text-color)]"
+                title="下一段"
+              >
+                <SkipForward className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Rate speed buttons */}
+            <div className="flex items-center space-x-1">
+              {[1.0, 1.25, 1.5, 1.8].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => tts.setRate(s)}
+                  className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
+                    tts.rate === s
+                      ? "bg-[var(--accent-color)] text-white"
+                      : "bg-[var(--bg-color)] text-[var(--text-muted)] hover:text-[var(--text-color)]"
+                  }`}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-Book Full-Text Search Modal */}
+      {showSearchModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex justify-center items-start pt-14 p-4 animate-fade-in">
+          <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[80vh] overflow-hidden">
+            {/* Header & Search Input */}
+            <div className="p-4 border-b border-[var(--border-color)] space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-base flex items-center gap-1.5">
+                  <Search className="w-4 h-4 text-[var(--accent-color)]" />
+                  書內全文檢索
+                </h3>
+                <button
+                  onClick={() => setShowSearchModal(false)}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-color)] p-1 rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3.5 top-3 text-[var(--text-muted)]" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    performSearch(e.target.value);
+                  }}
+                  placeholder="輸入關鍵字或角色名稱搜尋..."
+                  autoFocus
+                  className="w-full pl-10 pr-9 py-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => {
+                      setSearchQuery("");
+                      setSearchResults([]);
+                    }}
+                    className="absolute right-3 top-3 text-[var(--text-muted)] hover:text-[var(--text-color)]"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Search Results List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {searchQuery && searchResults.length === 0 && !isSearching && (
+                <div className="py-12 text-center text-xs text-[var(--text-muted)]">
+                  找不到包含「{searchQuery}」的內文結果
+                </div>
+              )}
+
+              {searchResults.map((res, i) => (
+                <div
+                  key={i}
+                  onClick={() => jumpToSearchResult(res)}
+                  className="p-3 rounded-xl border border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--bg-color)] hover:bg-opacity-80 cursor-pointer transition-all space-y-1 group"
+                >
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-semibold text-[var(--accent-color)] truncate max-w-[240px]">
+                      {res.chapterTitle}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-muted)]">
+                      {((res.charOffset / (totalChars || 1)) * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                    ...{res.snippetBefore}
+                    <mark className="bg-[var(--accent-color)]/25 text-[var(--text-color)] font-bold px-1 rounded">
+                      {res.matchText}
+                    </mark>
+                    {res.snippetAfter}...
+                  </p>
+                </div>
+              ))}
+
+              {!searchQuery && (
+                <div className="py-10 text-center text-xs text-[var(--text-muted)] space-y-1">
+                  <p>輸入小說內文關鍵字以快速搜尋章節與段落</p>
+                  <p className="text-[11px] opacity-70">支援即時命中預覽與點擊跳轉定位</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Table of Contents & Bookmarks Drawer */}
       {showTOC && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex justify-start animate-fade-in">
           <div className="bg-[var(--card-bg)] border-r border-[var(--border-color)] w-full max-w-sm h-full flex flex-col shadow-2xl">
+            {/* Drawer Header */}
             <div className="p-4 border-b border-[var(--border-color)] flex items-center justify-between">
               <div>
-                <h3 className="font-bold text-base">目錄章節</h3>
-                <p className="text-xs text-[var(--text-muted)]">共 {chapters.length} 個章節錨點</p>
+                <h3 className="font-bold text-base">目錄與書籤</h3>
+                <p className="text-xs text-[var(--text-muted)]">
+                  {activeDrawerTab === "chapters"
+                    ? `共 ${chapters.length} 個章節錨點`
+                    : `共 ${bookmarks.length} 個已存書籤`}
+                </p>
               </div>
               <button
                 onClick={() => setShowTOC(false)}
@@ -1010,26 +1441,98 @@ export default function ReaderPage() {
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {/* Tab Switcher */}
+            <div className="grid grid-cols-2 p-2 gap-1 border-b border-[var(--border-color)] bg-[var(--bg-color)]/50">
+              <button
+                onClick={() => setActiveDrawerTab("chapters")}
+                className={`py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  activeDrawerTab === "chapters"
+                    ? "bg-[var(--accent-color)] text-white shadow-sm"
+                    : "text-[var(--text-muted)] hover:text-[var(--text-color)]"
+                }`}
+              >
+                章節目錄 ({chapters.length})
+              </button>
+              <button
+                onClick={() => setActiveDrawerTab("bookmarks")}
+                className={`py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  activeDrawerTab === "bookmarks"
+                    ? "bg-[var(--accent-color)] text-white shadow-sm"
+                    : "text-[var(--text-muted)] hover:text-[var(--text-color)]"
+                }`}
+              >
+                書籤清單 ({bookmarks.length})
+              </button>
+            </div>
+
+            {/* Drawer Content */}
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {chapters.map((chapter) => {
-                const isCurrent = chapter.index === currentChapterIdx;
-                return (
-                  <button
-                    key={chapter.index}
-                    onClick={() => jumpToChapter(chapter)}
-                    className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs transition-all flex items-center justify-between ${
-                      isCurrent
-                        ? "bg-[var(--accent-color)] text-white font-bold shadow-sm"
-                        : "text-[var(--text-color)] hover:bg-[var(--bg-color)]"
-                    }`}
-                  >
-                    <span className="truncate pr-2">{chapter.title}</span>
-                    <span className="text-[10px] opacity-70 shrink-0">
-                      {((chapter.charOffset / (totalChars || 1)) * 100).toFixed(0)}%
-                    </span>
-                  </button>
-                );
-              })}
+              {activeDrawerTab === "chapters" ? (
+                /* Chapters List */
+                chapters.map((chapter) => {
+                  const isCurrent = chapter.index === currentChapterIdx;
+                  return (
+                    <button
+                      key={chapter.index}
+                      onClick={() => jumpToChapter(chapter)}
+                      className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs transition-all flex items-center justify-between ${
+                        isCurrent
+                          ? "bg-[var(--accent-color)] text-white font-bold shadow-sm"
+                          : "text-[var(--text-color)] hover:bg-[var(--bg-color)]"
+                      }`}
+                    >
+                      <span className="truncate pr-2">{chapter.title}</span>
+                      <span className="text-[10px] opacity-70 shrink-0">
+                        {((chapter.charOffset / (totalChars || 1)) * 100).toFixed(0)}%
+                      </span>
+                    </button>
+                  );
+                })
+              ) : (
+                /* Bookmarks List */
+                bookmarks.length === 0 ? (
+                  <div className="py-16 text-center text-xs text-[var(--text-muted)] space-y-2">
+                    <Bookmark className="w-8 h-8 mx-auto opacity-40" />
+                    <p>目前尚無書籤</p>
+                    <p className="text-[11px] opacity-70">
+                      點擊上方工具列的「加入書籤」圖示即可收藏精彩段落
+                    </p>
+                  </div>
+                ) : (
+                  bookmarks.map((bm) => (
+                    <div
+                      key={bm.id}
+                      onClick={() => jumpToBookmark(bm)}
+                      className="p-3 rounded-xl border border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--card-bg)] hover:bg-[var(--bg-color)] cursor-pointer transition-all space-y-1.5 group relative"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-[var(--text-color)] group-hover:text-[var(--accent-color)] truncate max-w-[200px]">
+                          {bm.title}
+                        </span>
+                        <div className="flex items-center space-x-1 shrink-0">
+                          <span className="text-[10px] text-[var(--text-muted)]">
+                            {((bm.char_offset / (totalChars || 1)) * 100).toFixed(0)}%
+                          </span>
+                          <button
+                            onClick={(e) => handleDeleteBookmark(e, bm.id)}
+                            className="p-1 text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                            title="刪除此書籤"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-[var(--text-muted)] line-clamp-2 leading-relaxed">
+                        {bm.preview_text}
+                      </p>
+                      <p className="text-[10px] text-[var(--text-muted)]/70">
+                        {new Date(bm.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                  ))
+                )
+              )}
             </div>
           </div>
           <div className="flex-1" onClick={() => setShowTOC(false)} />
@@ -1040,7 +1543,7 @@ export default function ReaderPage() {
       {showSettings && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex justify-end animate-fade-in">
           <div className="flex-1" onClick={() => setShowSettings(false)} />
-          <div className="bg-[var(--card-bg)] border-l border-[var(--border-color)] w-full max-w-sm h-full flex flex-col shadow-2xl p-6 space-y-6 overflow-y-auto">
+          <div className="bg-[var(--card-bg)] border-l border-[var(--border-color)] w-full max-w-sm h-full flex flex-col shadow-2xl p-6 space-y-5 overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-[var(--border-color)]">
               <h3 className="font-bold text-base">排版與閱讀偏好</h3>
               <button
@@ -1049,6 +1552,33 @@ export default function ReaderPage() {
               >
                 <X className="w-5 h-5" />
               </button>
+            </div>
+
+            {/* Chinese Variant dynamic conversion */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-[var(--text-muted)]">簡繁中文轉換</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: "original", name: "原文" },
+                  { id: "traditional", name: "正體(繁體)" },
+                  { id: "simplified", name: "簡體中文" },
+                ].map((cv) => (
+                  <button
+                    key={cv.id}
+                    onClick={() => {
+                      setChineseVariant(cv.id as any);
+                      onUserActivity();
+                    }}
+                    className={`py-2 rounded-xl border text-xs font-medium transition-all ${
+                      chineseVariant === cv.id
+                        ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm font-semibold"
+                        : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                    }`}
+                  >
+                    {cv.name}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Theme selector */}
@@ -1231,3 +1761,4 @@ export default function ReaderPage() {
     </div>
   );
 }
+

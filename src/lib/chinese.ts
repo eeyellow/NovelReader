@@ -1,7 +1,8 @@
 import * as OpenCC from "opencc-js";
 
-// Cached converter
+// Cached converters
 let s2twConverter: ((text: string) => string) | null = null;
+let t2sConverter: ((text: string) => string) | null = null;
 
 export function getS2TWConverter() {
   if (!s2twConverter) {
@@ -10,12 +11,28 @@ export function getS2TWConverter() {
   return s2twConverter;
 }
 
+export function getT2SConverter() {
+  if (!t2sConverter) {
+    t2sConverter = OpenCC.Converter({ from: "tw", to: "cn" });
+  }
+  return t2sConverter;
+}
+
 /**
  * Converts Simplified Chinese text to Traditional Chinese (Taiwan phrase standard)
  */
 export function convertToTraditional(text: string): string {
   if (!text) return "";
   const converter = getS2TWConverter();
+  return converter(text);
+}
+
+/**
+ * Converts Traditional Chinese text to Simplified Chinese
+ */
+export function convertToSimplified(text: string): string {
+  if (!text) return "";
+  const converter = getT2SConverter();
   return converter(text);
 }
 

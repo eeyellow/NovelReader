@@ -251,4 +251,38 @@ export const ProgressModel = {
   },
 };
 
+export const BookmarkModel = {
+  getAllByBookId(bookId: string): Bookmark[] {
+    const db = getDb();
+    const stmt = db.prepare(`
+      SELECT * FROM bookmarks 
+      WHERE book_id = ?
+      ORDER BY char_offset ASC, created_at DESC
+    `);
+    return stmt.all(bookId) as Bookmark[];
+  },
+
+  create(bookmark: {
+    id: string;
+    book_id: string;
+    char_offset: number;
+    title: string;
+    preview_text: string;
+  }) {
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO bookmarks (id, book_id, char_offset, title, preview_text)
+      VALUES (@id, @book_id, @char_offset, @title, @preview_text)
+    `);
+    return stmt.run(bookmark);
+  },
+
+  delete(id: string) {
+    const db = getDb();
+    const stmt = db.prepare("DELETE FROM bookmarks WHERE id = ?");
+    return stmt.run(id);
+  },
+};
+
 export { DATA_DIR, UPLOADS_DIR };
+

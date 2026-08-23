@@ -27,6 +27,18 @@ interface NovelReaderDB extends DBSchema {
       synced: boolean;
     };
   };
+  bookmarks: {
+    key: string; // id
+    value: {
+      id: string;
+      book_id: string;
+      char_offset: number;
+      title: string;
+      preview_text: string;
+      created_at: string;
+    };
+    indexes: { "by_book": string };
+  };
   settings: {
     key: string;
     value: any;
@@ -34,7 +46,7 @@ interface NovelReaderDB extends DBSchema {
 }
 
 const DB_NAME = "novel_reader_local";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<NovelReaderDB>> | null = null;
 
@@ -44,7 +56,7 @@ export function getLocalDB() {
   }
   if (!dbPromise) {
     dbPromise = openDB<NovelReaderDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion) {
         if (!db.objectStoreNames.contains("books_content")) {
           db.createObjectStore("books_content", { keyPath: "book_id" });
         }
@@ -53,6 +65,10 @@ export function getLocalDB() {
         }
         if (!db.objectStoreNames.contains("settings")) {
           db.createObjectStore("settings");
+        }
+        if (!db.objectStoreNames.contains("bookmarks")) {
+          const bmStore = db.createObjectStore("bookmarks", { keyPath: "id" });
+          bmStore.createIndex("by_book", "book_id");
         }
       },
     });
@@ -191,9 +207,39 @@ export const LocalStore = {
     }));
   },
 
+  async saveBookmark(bookmark: {
+    id: string;
+    book_id: string;
+    char_offset: number;
+    title: string;
+    preview_text: string;
+    created_at?: string;
+  }) {
+    const db = await getLocalDB();
+    if (!db) return;
+    await db.put("bookmarks", {
+      ...bookmark,
+      created_at: bookmark.created_at || new Date().toISOString(),
+    });
+  },
+
+  async getBookmarks(bookId: string) {
+    const db = await getLocalDB();
+    if (!db) return [];
+    const index = db.transaction("bookmarks").store.index("by_book");
+    return await index.getAll(bookId);
+  },
+
+  async deleteBookmark(id: string) {
+    const db = await getLocalDB();
+    if (!db) return;
+    await db.delete("bookmarks", id);
+  },
+
   async setSetting(key: string, value: any) {
     const db = await getLocalDB();
     if (!db) return;
     await db.put("settings", value, key);
   },
 };
+
