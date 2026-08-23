@@ -5,6 +5,10 @@ interface SyncPayload {
   book_id: string;
   char_offset: number;
   percentage: number;
+  chapter_index?: number;
+  page_index?: number;
+  page_ratio?: number;
+  total_pages?: number;
   device_name: string;
   updated_at: string;
 }
@@ -51,7 +55,13 @@ export function syncProgress(
   bookId: string,
   charOffset: number,
   percentage: number,
-  forceImmediate: boolean = false
+  forceImmediate: boolean = false,
+  extra?: {
+    chapter_index?: number;
+    page_index?: number;
+    page_ratio?: number;
+    total_pages?: number;
+  }
 ) {
   if (typeof window === "undefined" || !bookId) return;
 
@@ -69,13 +79,18 @@ export function syncProgress(
     percentage,
     deviceName,
     false,
-    timestamp
+    timestamp,
+    extra
   );
 
   const payload: SyncPayload = {
     book_id: bookId,
     char_offset: Math.round(charOffset),
     percentage: Number(percentage.toFixed(2)),
+    chapter_index: extra?.chapter_index,
+    page_index: extra?.page_index,
+    page_ratio: extra?.page_ratio,
+    total_pages: extra?.total_pages,
     device_name: deviceName,
     updated_at: timestamp,
   };
@@ -104,7 +119,8 @@ export function syncProgress(
           percentage,
           deviceName,
           true,
-          timestamp
+          timestamp,
+          extra
         );
       }
     }

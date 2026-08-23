@@ -102,6 +102,8 @@ export default function ReaderPage() {
   const [viewportWidth, setViewportWidth] = useState(0);
   const pendingPageRef = useRef<"first" | "last" | null>(null);
   const pendingTargetOffset = useRef<number | null>(null);
+  const pendingTargetPageRatio = useRef<number | null>(null);
+  const pendingTargetPageIndex = useRef<number | null>(null);
   const isRestoringProgress = useRef<boolean>(true);
 
   const columnGap = 36; // px
@@ -214,15 +216,36 @@ export default function ReaderPage() {
 
     // 3. 取得本機閱讀進度並立刻完成畫面載入
     let targetOffset = 0;
+    let targetChapterIdx = 0;
+    let targetPageRatio: number | null = null;
+    let targetPageIndex: number | null = null;
+
     const localProg = await LocalStore.getLocalProgress(bookId);
-    if (localProg && localProg.char_offset) {
-      targetOffset = localProg.char_offset;
+    if (localProg) {
+      targetOffset = localProg.char_offset || 0;
+      if (
+        typeof localProg.chapter_index === "number" &&
+        localProg.chapter_index >= 0
+      ) {
+        targetChapterIdx = localProg.chapter_index;
+      } else {
+        targetChapterIdx = findCurrentChapter(parsedChapters, targetOffset);
+      }
+      if (typeof localProg.page_ratio === "number") {
+        targetPageRatio = localProg.page_ratio;
+      }
+      if (typeof localProg.page_index === "number") {
+        targetPageIndex = localProg.page_index;
+      }
     }
 
-    const chIdx = findCurrentChapter(parsedChapters, targetOffset);
-    setCurrentChapterIdx(chIdx);
-    setCurrentOffset(targetOffset);
+    pendingTargetPageIndex.current = targetPageIndex;
+    pendingTargetPageRatio.current = targetPageRatio;
     pendingTargetOffset.current = targetOffset;
+    isRestoringProgress.current = true;
+
+    setCurrentChapterIdx(targetChapterIdx);
+    setCurrentOffset(targetOffset);
     setIsLoading(false);
 
     // 4. 背景非阻塞檢查雲端進度衝突（不卡頓閱讀畫面）
@@ -293,63 +316,52 @@ export default function ReaderPage() {
       setCurrentPage(0);
       pendingPageRef.current = null;
       isRestoringProgress.current = false;
-    } else if (pendingTargetOffset.current !== null && currentChapter) {
-      const relOffset = Math.max(
-        0,
-        pendingTargetOffset.current - currentChapter.charOffset
-      );
-      const chLen = currentChapter.length || 1;
-
+    } else if (
+      pendingTargetPageRatio.current !== null ||
+      pendingTargetPageIndex.current !== null ||
+      pendingTargetOffset.current !== null
+    ) {
       let targetP = 0;
-      // 精準段落 DOM 偏移量對齊
       if (
-        contentRef.current &&
-        vWidth > 0 &&
-        currentChapterParagraphs.length > 0
+        pendingTargetPageRatio.current !== null &&
+        pendingTargetPageRatio.current >= 0
       ) {
-        let charAcc = 0;
-        let targetParaIdx = 0;
-        for (let i = 0; i < currentChapterParagraphs.length; i++) {
-          const pLen = currentChapterParagraphs[i].length;
-          if (charAcc + pLen >= relOffset) {
-            targetParaIdx = i;
-            break;
-          }
-          charAcc += pLen;
-        }
-
-        const pElements = contentRef.current.querySelectorAll(
-          "p.novel-content-paragraph"
-        );
-        if (pElements && pElements[targetParaIdx]) {
-          const pEl = pElements[targetParaIdx] as HTMLElement;
-          const colW = vWidth + columnGap;
-          targetP = Math.min(
-            totalCols - 1,
-            Math.max(0, Math.floor((pEl.offsetLeft + 8) / colW))
-          );
-        } else {
-          targetP = Math.min(
-            totalCols - 1,
-            Math.max(0, Math.floor((relOffset / chLen) * totalCols))
-          );
-        }
-      } else {
         targetP = Math.min(
           totalCols - 1,
-          Math.max(0, Math.floor((relOffset / chLen) * totalCols))
+          Math.max(0, Math.floor(pendingTargetPageRatio.current * totalCols))
+        );
+      } else if (
+        pendingTargetPageIndex.current !== null &&
+        pendingTargetPageIndex.current >= 0
+      ) {
+        targetP = Math.min(
+          totalCols - 1,
+          Math.max(0, pendingTargetPageIndex.current)
+        );
+      } else if (pendingTargetOffset.current !== null && currentChapter) {
+        const relOffset = Math.max(
+          0,
+          pendingTargetOffset.current - currentChapter.charOffset
+        );
+        const chLen = currentChapter.length || 1;
+        const ratio = relOffset / chLen;
+        targetP = Math.min(
+          totalCols - 1,
+          Math.max(0, Math.floor(ratio * totalCols))
         );
       }
 
       setCurrentPage(targetP);
+      pendingTargetPageRatio.current = null;
+      pendingTargetPageIndex.current = null;
       pendingTargetOffset.current = null;
       setTimeout(() => {
         isRestoringProgress.current = false;
-      }, 150);
+      }, 200);
     } else {
       setCurrentPage((prev) => Math.min(prev, totalCols - 1));
     }
-  }, [currentChapter, currentChapterParagraphs, columnGap]);
+  }, [currentChapter, columnGap]);
 
   // Measure after layout or chapter/style change
   useLayoutEffect(() => {
@@ -379,14 +391,19 @@ export default function ReaderPage() {
 
   // Update current character offset & sync progress on page change
   useEffect(() => {
-    if (isRestoringProgress.current || pendingTargetOffset.current !== null) {
+    if (
+      isRestoringProgress.current ||
+      pendingTargetOffset.current !== null ||
+      pendingTargetPageIndex.current !== null ||
+      pendingTargetPageRatio.current !== null
+    ) {
       return;
     }
-    if (!currentChapter || !totalChars) return;
+    if (!currentChapter || !totalChars || totalPages <= 0) return;
 
     const chStart = currentChapter.charOffset;
     const chLen = currentChapter.length || 0;
-    const pageRatio = totalPages > 1 ? currentPage / (totalPages - 1) : 0;
+    const pageRatio = totalPages > 0 ? currentPage / totalPages : 0;
     const calculatedOffset = Math.min(
       totalChars,
       Math.round(chStart + pageRatio * chLen)
@@ -396,8 +413,20 @@ export default function ReaderPage() {
     const percentage = Number(
       ((calculatedOffset / totalChars) * 100).toFixed(2)
     );
-    syncProgress(bookId, calculatedOffset, percentage, false);
-  }, [bookId, currentChapter, currentPage, totalPages, totalChars]);
+    syncProgress(bookId, calculatedOffset, percentage, false, {
+      chapter_index: currentChapterIdx,
+      page_index: currentPage,
+      page_ratio: pageRatio,
+      total_pages: totalPages,
+    });
+  }, [
+    bookId,
+    currentChapter,
+    currentChapterIdx,
+    currentPage,
+    totalPages,
+    totalChars,
+  ]);
 
   // Page Navigation Methods
   const goToNextPage = useCallback(() => {
@@ -405,6 +434,7 @@ export default function ReaderPage() {
       setCurrentPage((p) => p + 1);
     } else if (currentChapterIdx < chapters.length - 1) {
       pendingPageRef.current = "first";
+      isRestoringProgress.current = false;
       setCurrentChapterIdx((idx) => idx + 1);
     }
   }, [currentPage, totalPages, currentChapterIdx, chapters.length]);
@@ -414,6 +444,7 @@ export default function ReaderPage() {
       setCurrentPage((p) => p - 1);
     } else if (currentChapterIdx > 0) {
       pendingPageRef.current = "last";
+      isRestoringProgress.current = false;
       setCurrentChapterIdx((idx) => idx - 1);
     }
   }, [currentPage, currentChapterIdx]);
@@ -421,6 +452,7 @@ export default function ReaderPage() {
   const goToNextChapter = useCallback(() => {
     if (currentChapterIdx < chapters.length - 1) {
       pendingPageRef.current = "first";
+      isRestoringProgress.current = false;
       setCurrentChapterIdx((idx) => idx + 1);
     }
   }, [currentChapterIdx, chapters.length]);
@@ -428,18 +460,21 @@ export default function ReaderPage() {
   const goToPrevChapter = useCallback(() => {
     if (currentChapterIdx > 0) {
       pendingPageRef.current = "first";
+      isRestoringProgress.current = false;
       setCurrentChapterIdx((idx) => idx - 1);
     }
   }, [currentChapterIdx]);
 
   const goToFirstPage = useCallback(() => {
     pendingPageRef.current = "first";
+    isRestoringProgress.current = false;
     setCurrentChapterIdx(0);
   }, []);
 
   const goToLastPage = useCallback(() => {
     if (chapters.length > 0) {
       pendingPageRef.current = "last";
+      isRestoringProgress.current = false;
       setCurrentChapterIdx(chapters.length - 1);
     }
   }, [chapters.length]);
@@ -447,6 +482,7 @@ export default function ReaderPage() {
   // Jump to specific chapter from TOC
   const jumpToChapter = (chapter: Chapter) => {
     pendingPageRef.current = "first";
+    isRestoringProgress.current = false;
     setCurrentChapterIdx(chapter.index);
     setShowTOC(false);
   };

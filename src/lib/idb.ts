@@ -18,6 +18,10 @@ interface NovelReaderDB extends DBSchema {
       book_id: string;
       char_offset: number;
       percentage: number;
+      chapter_index?: number;
+      page_index?: number;
+      page_ratio?: number;
+      total_pages?: number;
       device_name: string;
       updated_at: string;
       synced: boolean;
@@ -117,7 +121,13 @@ export const LocalStore = {
     percentage: number,
     deviceName: string,
     synced: boolean = false,
-    timestamp?: string
+    timestamp?: string,
+    extra?: {
+      chapter_index?: number;
+      page_index?: number;
+      page_ratio?: number;
+      total_pages?: number;
+    }
   ) {
     const db = await getLocalDB();
     if (!db) return;
@@ -126,6 +136,10 @@ export const LocalStore = {
       book_id: bookId,
       char_offset: charOffset,
       percentage,
+      chapter_index: extra?.chapter_index,
+      page_index: extra?.page_index,
+      page_ratio: extra?.page_ratio,
+      total_pages: extra?.total_pages,
       device_name: deviceName,
       updated_at: updatedAt,
       synced,
