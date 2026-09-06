@@ -90,13 +90,17 @@ export async function requestPersistentStorage(): Promise<boolean> {
 
 export const LocalStore = {
   async saveBookContent(bookId: string, title: string, content: string, totalChars: number) {
+    if (!content || typeof content !== "string" || (content.startsWith('{"') && content.includes('"success":false'))) {
+      console.warn("Refusing to save corrupt content for book:", bookId);
+      return;
+    }
     const db = await getLocalDB();
     if (!db) return;
     await db.put("books_content", {
       book_id: bookId,
       title,
       content,
-      total_chars: totalChars,
+      total_chars: totalChars || content.length,
       cached_at: new Date().toISOString(),
     });
   },
@@ -119,6 +123,18 @@ export const LocalStore = {
     if (!db) return;
     await db.delete("books_content", bookId);
     await db.delete("local_progress", bookId);
+    try {
+      const tx = db.transaction("bookmarks", "readwrite");
+      const index = tx.store.index("by_book");
+      let cursor = await index.openCursor(bookId);
+      while (cursor) {
+        await cursor.delete();
+        cursor = await cursor.continue();
+      }
+      await tx.done;
+    } catch (e) {
+      console.warn("Error cleaning bookmarks for deleted book:", e);
+    }
   },
 
   async updateBookTitle(bookId: string, title: string) {

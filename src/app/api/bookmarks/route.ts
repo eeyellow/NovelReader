@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const bookmarkId = `bm_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
+    const bookmarkId = body.id || `bm_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
     BookmarkModel.create({
       id: bookmarkId,
       book_id,
@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
         char_offset: Math.round(char_offset),
         title: title || "書籤",
         preview_text: preview_text || "",
-        created_at: new Date().toISOString(),
+        created_at: body.created_at || new Date().toISOString(),
       },
     });
   } catch (error: any) {

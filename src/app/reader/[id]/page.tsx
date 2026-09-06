@@ -145,6 +145,8 @@ export default function ReaderPage() {
   totalPagesRef.current = totalPages;
   const lastDimensionsRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
   const measurePaginationRef = useRef<() => void>(() => {});
+  const activeChapterBtnRef = useRef<HTMLButtonElement | null>(null);
+  const lastTouchActionTime = useRef<number>(0);
 
   // Scrubber state
   const [isScrubbing, setIsScrubbing] = useState(false);
@@ -257,7 +259,11 @@ export default function ReaderPage() {
     // 1. 優先從本機 IndexedDB 快取讀取
     try {
       const cached = await LocalStore.getBookContent(bookId);
-      if (cached && cached.content) {
+      if (
+        cached &&
+        cached.content &&
+        (!cached.content.startsWith('{"') || !cached.content.includes('"success":false'))
+      ) {
         bookText = cached.content;
         bookTitle = cached.title;
         bookChars = cached.total_chars;
@@ -280,7 +286,16 @@ export default function ReaderPage() {
 
         if (metaRes.ok && contentRes.ok) {
           const metaData = await metaRes.json();
-          bookText = await contentRes.text();
+          const rawContent = await contentRes.text();
+
+          if (
+            !rawContent ||
+            (rawContent.startsWith('{"') && rawContent.includes('"success":false'))
+          ) {
+            throw new Error("取得小說內文格式異常");
+          }
+
+          bookText = rawContent;
           bookTitle = metaData.book?.title || "未命名小說";
           bookChars = bookText.length;
 
@@ -787,6 +802,28 @@ export default function ReaderPage() {
     }
   }, []);
 
+  // Synchronize fullscreen state with browser Esc key or system exit
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  // Auto scroll TOC to active chapter when drawer opens
+  useEffect(() => {
+    if (showTOC && activeDrawerTab === "chapters") {
+      const timer = setTimeout(() => {
+        activeChapterBtnRef.current?.scrollIntoView({
+          block: "center",
+          behavior: "smooth",
+        });
+      }, 120);
+      return () => clearTimeout(timer);
+    }
+  }, [showTOC, activeDrawerTab, currentChapterIdx]);
+
   // Preference updates
   const updateTheme = (newTheme: string) => {
     setTheme(newTheme);
@@ -953,18 +990,22 @@ export default function ReaderPage() {
   useTouchGesture({
     elementRef: readerMainRef,
     onSwipeLeft: () => {
+      lastTouchActionTime.current = Date.now();
       onUserActivity();
       clickDirection === "inverted" ? goToPrevPage() : goToNextPage();
     },
     onSwipeRight: () => {
+      lastTouchActionTime.current = Date.now();
       onUserActivity();
       clickDirection === "inverted" ? goToNextPage() : goToPrevPage();
     },
     onPinchZoom: (delta) => {
+      lastTouchActionTime.current = Date.now();
       onUserActivity();
       updateFontSize(delta);
     },
     onTap: (clientX) => {
+      lastTouchActionTime.current = Date.now();
       onUserActivity();
       const selection = window.getSelection();
       if (selection && selection.toString().length > 0) return;
@@ -1139,7 +1180,25 @@ export default function ReaderPage() {
       {readMode === "paginated" ? (
         <main
           ref={readerMainRef}
-          className="flex-1 overflow-hidden relative flex flex-col justify-center px-4 sm:px-8 py-14 select-text"
+          onClick={(e) => {
+            if (Date.now() - lastTouchActionTime.current < 450) return;
+            const selection = window.getSelection();
+            if (selection && selection.toString().trim().length > 0) return;
+            const x = e.clientX;
+            const w = window.innerWidth;
+            const ratio = x / w;
+            if (ratio < 0.28) {
+              clickDirection === "inverted" ? goToNextPage() : goToPrevPage();
+              onUserActivity();
+            } else if (ratio > 0.72) {
+              clickDirection === "inverted" ? goToPrevPage() : goToNextPage();
+              onUserActivity();
+            } else {
+              setShowToolbar((prev) => !prev);
+              onUserActivity();
+            }
+          }}
+          className="flex-1 overflow-hidden relative flex flex-col justify-center px-4 sm:px-8 py-14 select-text cursor-default"
         >
           <div className={`mx-auto w-full h-full ${maxWidthClass} relative overflow-hidden`}>
             {isLoading ? (
@@ -1642,6 +1701,7 @@ export default function ReaderPage() {
                   return (
                     <button
                       key={chapter.index}
+                      ref={isCurrent ? activeChapterBtnRef : undefined}
                       onClick={() => jumpToChapter(chapter)}
                       className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs transition-all flex items-center justify-between ${
                         isCurrent

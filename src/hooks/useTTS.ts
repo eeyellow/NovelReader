@@ -18,6 +18,7 @@ export function useTTS({ onParagraphChange, onPageEnd }: UseTTSOptions = {}) {
   const currentIndexRef = useRef<number>(-1);
   const rateRef = useRef<number>(1.0);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -25,6 +26,12 @@ export function useTTS({ onParagraphChange, onPageEnd }: UseTTSOptions = {}) {
       const savedRate = Number(localStorage.getItem("novel_reader_tts_rate")) || 1.0;
       setRateState(savedRate);
       rateRef.current = savedRate;
+
+      const updateVoices = () => {
+        voicesRef.current = window.speechSynthesis.getVoices();
+      };
+      updateVoices();
+      window.speechSynthesis.onvoiceschanged = updateVoices;
     }
   }, []);
 
@@ -71,10 +78,17 @@ export function useTTS({ onParagraphChange, onPageEnd }: UseTTSOptions = {}) {
     utterance.lang = "zh-TW";
 
     // Best effort Chinese voice selection
-    const voices = window.speechSynthesis.getVoices();
-    const zhVoice = voices.find(
-      (v) => v.lang.includes("zh-TW") || v.lang.includes("zh_TW") || v.lang.includes("cmn-Hant")
-    ) || voices.find((v) => v.lang.includes("zh"));
+    const voices =
+      voicesRef.current.length > 0
+        ? voicesRef.current
+        : window.speechSynthesis.getVoices();
+    const zhVoice =
+      voices.find(
+        (v) =>
+          v.lang.includes("zh-TW") ||
+          v.lang.includes("zh_TW") ||
+          v.lang.includes("cmn-Hant")
+      ) || voices.find((v) => v.lang.includes("zh"));
     if (zhVoice) {
       utterance.voice = zhVoice;
     }

@@ -47,7 +47,10 @@ export function decodeToUtf8(buffer: Uint8Array | ArrayBuffer | Buffer): {
 
   try {
     const decoder = new TextDecoder(encoding);
-    const text = decoder.decode(uint8);
+    let text = decoder.decode(uint8);
+    if (text.charCodeAt(0) === 0xfeff) {
+      text = text.slice(1);
+    }
     return {
       text,
       detectedEncoding: encoding,
@@ -56,8 +59,12 @@ export function decodeToUtf8(buffer: Uint8Array | ArrayBuffer | Buffer): {
   } catch (error) {
     console.warn(`Failed to decode with ${encoding}, falling back to utf-8`, error);
     const fallbackDecoder = new TextDecoder("utf-8");
+    let text = fallbackDecoder.decode(uint8);
+    if (text.charCodeAt(0) === 0xfeff) {
+      text = text.slice(1);
+    }
     return {
-      text: fallbackDecoder.decode(uint8),
+      text,
       detectedEncoding: "utf-8-fallback",
       confidence: 0,
     };

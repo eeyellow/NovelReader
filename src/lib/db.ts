@@ -57,6 +57,10 @@ export function getDb(): Database.Database {
         percentage REAL NOT NULL DEFAULT 0.0,
         device_name TEXT,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        chapter_index INTEGER,
+        page_index INTEGER,
+        page_ratio REAL,
+        total_pages INTEGER,
         FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
       );
 
@@ -70,6 +74,26 @@ export function getDb(): Database.Database {
         FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
       );
     `);
+
+    // Ensure reading_progress columns exist on existing databases
+    try {
+      const columns = dbInstance.prepare("PRAGMA table_info(reading_progress)").all() as Array<{ name: string }>;
+      const colNames = new Set(columns.map((c) => c.name));
+      if (!colNames.has("chapter_index")) {
+        dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN chapter_index INTEGER");
+      }
+      if (!colNames.has("page_index")) {
+        dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN page_index INTEGER");
+      }
+      if (!colNames.has("page_ratio")) {
+        dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN page_ratio REAL");
+      }
+      if (!colNames.has("total_pages")) {
+        dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN total_pages INTEGER");
+      }
+    } catch (e) {
+      console.warn("Table migration notice:", e);
+    }
   }
   return dbInstance;
 }
@@ -94,6 +118,10 @@ export interface ReadingProgress {
   percentage: number;
   device_name: string;
   updated_at: string;
+  chapter_index?: number;
+  page_index?: number;
+  page_ratio?: number;
+  total_pages?: number;
 }
 
 export interface Bookmark {
@@ -196,11 +224,21 @@ export const ProgressModel = {
     charOffset: number,
     percentage: number,
     deviceName: string,
-    clientUpdatedAt?: string
+    clientUpdatedAt?: string,
+    extra?: {
+      chapter_index?: number;
+      page_index?: number;
+      page_ratio?: number;
+      total_pages?: number;
+    }
   ): { updated: boolean; currentProgress: ReadingProgress } {
     const db = getDb();
     const existing = this.get(bookId);
     const now = clientUpdatedAt || new Date().toISOString();
+    const chIdx = extra?.chapter_index ?? null;
+    const pIdx = extra?.page_index ?? null;
+    const pRatio = extra?.page_ratio ?? null;
+    const totPages = extra?.total_pages ?? null;
 
     if (existing) {
       const existingTime = new Date(existing.updated_at).getTime();
@@ -210,10 +248,14 @@ export const ProgressModel = {
       if (clientTime >= existingTime - 1000) {
         const stmt = db.prepare(`
           UPDATE reading_progress
-          SET char_offset = ?, percentage = ?, device_name = ?, updated_at = ?
+          SET char_offset = ?, percentage = ?, device_name = ?, updated_at = ?,
+              chapter_index = COALESCE(?, chapter_index),
+              page_index = COALESCE(?, page_index),
+              page_ratio = COALESCE(?, page_ratio),
+              total_pages = COALESCE(?, total_pages)
           WHERE book_id = ?
         `);
-        stmt.run(charOffset, percentage, deviceName, now, bookId);
+        stmt.run(charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages, bookId);
         return {
           updated: true,
           currentProgress: {
@@ -222,6 +264,10 @@ export const ProgressModel = {
             percentage,
             device_name: deviceName,
             updated_at: now,
+            chapter_index: chIdx ?? existing.chapter_index,
+            page_index: pIdx ?? existing.page_index,
+            page_ratio: pRatio ?? existing.page_ratio,
+            total_pages: totPages ?? existing.total_pages,
           },
         };
       } else {
@@ -233,10 +279,10 @@ export const ProgressModel = {
       }
     } else {
       const stmt = db.prepare(`
-        INSERT INTO reading_progress (book_id, char_offset, percentage, device_name, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO reading_progress (book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      stmt.run(bookId, charOffset, percentage, deviceName, now);
+      stmt.run(bookId, charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages);
       return {
         updated: true,
         currentProgress: {
@@ -245,6 +291,10 @@ export const ProgressModel = {
           percentage,
           device_name: deviceName,
           updated_at: now,
+          chapter_index: chIdx ?? undefined,
+          page_index: pIdx ?? undefined,
+          page_ratio: pRatio ?? undefined,
+          total_pages: totPages ?? undefined,
         },
       };
     }
@@ -271,7 +321,7 @@ export const BookmarkModel = {
   }) {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO bookmarks (id, book_id, char_offset, title, preview_text)
+      INSERT OR REPLACE INTO bookmarks (id, book_id, char_offset, title, preview_text)
       VALUES (@id, @book_id, @char_offset, @title, @preview_text)
     `);
     return stmt.run(bookmark);

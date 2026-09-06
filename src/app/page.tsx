@@ -36,7 +36,8 @@ import { Book } from "@/lib/db";
 import { LocalStore, requestPersistentStorage } from "@/lib/idb";
 import { getDeviceName, setCustomDeviceName } from "@/lib/device";
 import { decodeToUtf8 } from "@/lib/encoding";
-import { isSimplifiedChinese } from "@/lib/chinese";
+import { isSimplifiedChinese, convertToTraditional, convertToSimplified } from "@/lib/chinese";
+import { flushUnsyncedProgress } from "@/lib/sync";
 
 const THEMES = [
   { id: "parchment", name: "羊皮紙", icon: BookMarked, color: "bg-[#fbf6ec] border-[#8b5e3c]" },
@@ -79,6 +80,7 @@ export default function BookshelfPage() {
   const [storageQuota, setStorageQuota] = useState(0);
   const [isCachingAll, setIsCachingAll] = useState(false);
   const [cacheAllProgress, setCacheAllProgress] = useState<{ current: number; total: number } | null>(null);
+  const [cachingBookIds, setCachingBookIds] = useState<Record<string, boolean>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
 
@@ -215,6 +217,7 @@ export default function BookshelfPage() {
           setIsOffline(false);
           checkAllCaches(data.books);
           LocalStore.setSetting("cached_book_list", data.books);
+          flushUnsyncedProgress().catch(console.warn);
         }
       } else {
         throw new Error("伺服器回應異常");
@@ -449,15 +452,26 @@ export default function BookshelfPage() {
     e.preventDefault();
     e.stopPropagation();
 
+    if (cachingBookIds[book.id]) return;
+    setCachingBookIds((prev) => ({ ...prev, [book.id]: true }));
+
     try {
       const res = await fetch(`/api/books/${book.id}/content`);
       if (res.ok) {
         const text = await res.text();
-        await LocalStore.saveBookContent(book.id, book.title, text, book.total_chars);
-        setCachedStatus((prev) => ({ ...prev, [book.id]: true }));
+        if (text && (!text.startsWith('{"') || !text.includes('"success":false'))) {
+          await LocalStore.saveBookContent(book.id, book.title, text, book.total_chars);
+          setCachedStatus((prev) => ({ ...prev, [book.id]: true }));
+        } else {
+          throw new Error("伺服器回應內容異常");
+        }
+      } else {
+        throw new Error(`下載失敗 (${res.status})`);
       }
-    } catch (err) {
-      alert("快取下載失敗，請檢查網路連線");
+    } catch (err: any) {
+      alert("快取下載失敗，請檢查網路連線：" + (err?.message || ""));
+    } finally {
+      setCachingBookIds((prev) => ({ ...prev, [book.id]: false }));
     }
   };
 
@@ -473,7 +487,11 @@ export default function BookshelfPage() {
     try {
       await fetch(`/api/books/${book.id}`, { method: "DELETE" });
       await LocalStore.deleteBookContent(book.id);
-      setBooks((prev) => prev.filter((b) => b.id !== book.id));
+      setBooks((prev) => {
+        const next = prev.filter((b) => b.id !== book.id);
+        LocalStore.setSetting("cached_book_list", next);
+        return next;
+      });
       if (
         typeof window !== "undefined" &&
         localStorage.getItem("novel_reader_last_book_id") === book.id
@@ -580,9 +598,19 @@ export default function BookshelfPage() {
   };
 
   const filteredBooks = useMemo(() => {
-    const list = books.filter((b) =>
-      b.title.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+    const rawQ = searchTerm.trim().toLowerCase();
+    const tradQ = convertToTraditional(rawQ).toLowerCase();
+    const simpQ = convertToSimplified(rawQ).toLowerCase();
+
+    const list = books.filter((b) => {
+      if (!rawQ) return true;
+      const lowerTitle = b.title.toLowerCase();
+      return (
+        lowerTitle.includes(rawQ) ||
+        lowerTitle.includes(tradQ) ||
+        lowerTitle.includes(simpQ)
+      );
+    });
 
     return list.sort((a, b) => {
       let cmp = 0;
@@ -953,10 +981,11 @@ export default function BookshelfPage() {
                       ) : (
                         <button
                           onClick={(e) => handleCacheBook(e, book)}
-                          className="p-0.5 text-amber-600 dark:text-amber-400 hover:scale-110 transition-transform"
-                          title="點擊預先下載至本機快取"
+                          disabled={cachingBookIds[book.id]}
+                          className="p-0.5 text-amber-600 dark:text-amber-400 hover:scale-110 transition-transform disabled:opacity-60"
+                          title={cachingBookIds[book.id] ? "下載快取中..." : "點擊預先下載至本機快取"}
                         >
-                          <DownloadCloud className="w-4 h-4" />
+                          <DownloadCloud className={`w-4 h-4 ${cachingBookIds[book.id] ? "animate-bounce" : ""}`} />
                         </button>
                       )}
                     </div>
@@ -1006,10 +1035,12 @@ export default function BookshelfPage() {
                           ) : (
                             <button
                               onClick={(e) => handleCacheBook(e, book)}
-                              className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition-colors font-medium"
-                              title="點擊預先下載至本機快取"
+                              disabled={cachingBookIds[book.id]}
+                              className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition-colors font-medium disabled:opacity-60"
+                              title={cachingBookIds[book.id] ? "正在下載快取..." : "點擊預先下載至本機快取"}
                             >
-                              <DownloadCloud className="w-3 h-3 mr-1 inline" /> 點擊快取
+                              <DownloadCloud className={`w-3 h-3 mr-1 inline ${cachingBookIds[book.id] ? "animate-spin" : ""}`} />
+                              {cachingBookIds[book.id] ? "快取中..." : "點擊快取"}
                             </button>
                           )}
                         </div>

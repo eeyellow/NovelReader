@@ -45,6 +45,10 @@ export async function POST(req: NextRequest) {
       percentage,
       device_name = "Unknown Device",
       updated_at,
+      chapter_index,
+      page_index,
+      page_ratio,
+      total_pages,
     } = body;
 
     if (!book_id || typeof char_offset !== "number") {
@@ -59,7 +63,13 @@ export async function POST(req: NextRequest) {
       char_offset,
       percentage || 0,
       device_name,
-      updated_at
+      updated_at,
+      {
+        chapter_index: typeof chapter_index === "number" ? chapter_index : undefined,
+        page_index: typeof page_index === "number" ? page_index : undefined,
+        page_ratio: typeof page_ratio === "number" ? page_ratio : undefined,
+        total_pages: typeof total_pages === "number" ? total_pages : undefined,
+      }
     );
 
     return NextResponse.json({

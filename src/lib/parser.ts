@@ -14,6 +14,7 @@ const CHAPTER_REGEX =
 export function extractChapters(text: string): Chapter[] {
   const chapters: Chapter[] = [];
   let match: RegExpExecArray | null;
+  CHAPTER_REGEX.lastIndex = 0;
 
   // Always include starting chapter if text doesn't start with a chapter header
   let firstChapterOffset = 0;

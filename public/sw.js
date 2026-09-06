@@ -1,4 +1,4 @@
-const CACHE_NAME = "novel-reader-v2";
+const CACHE_NAME = "novel-reader-v3";
 const STATIC_ASSETS = ["/", "/manifest.json", "/icon.svg"];
 
 // Install: Precache shell and static assets
@@ -27,7 +27,7 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Fetch: Offline-First & Stale-While-Revalidate strategies
+// Fetch: Strategy routing
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
@@ -37,28 +37,10 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 1. API routes: Network-first with fast timeout & offline fallback response
+  // 1. API routes: Direct network-only.
+  // DO NOT fake status 200 offline fallback for APIs, as /api/books/[id]/content returns raw text!
+  // Faking 200 JSON causes raw novel text to be overwritten by fallback JSON strings in IndexedDB.
   if (url.pathname.startsWith("/api/")) {
-    event.respondWith(
-      (async () => {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 3000);
-          const networkResponse = await fetch(request, { signal: controller.signal });
-          clearTimeout(timeoutId);
-          return networkResponse;
-        } catch {
-          // Return graceful offline fallback JSON
-          return new Response(
-            JSON.stringify({ success: false, offline: true, books: [] }),
-            {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            }
-          );
-        }
-      })()
-    );
     return;
   }
 
@@ -66,52 +48,9 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
-        const cachedResponse = await caches.match(request);
-
-        const networkFetchPromise = fetch(request)
-          .then((networkResponse) => {
-            if (
-              networkResponse &&
-              networkResponse.status === 200 &&
-              networkResponse.type === "basic"
-            ) {
-              const clone = networkResponse.clone();
-              caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-            }
-            return networkResponse;
-          })
-          .catch(() => null);
-
-        // If we have cached HTML, return immediately for instant offline load
-        if (cachedResponse) {
-          return cachedResponse;
-        }
-
-        // Otherwise wait for network or fallback to app shell "/"
-        const networkResponse = await networkFetchPromise;
-        if (networkResponse) {
-          return networkResponse;
-        }
-
-        const appShell = await caches.match("/");
-        if (appShell) {
-          return appShell;
-        }
-
-        return new Response("離線模式，請連線後再試", {
-          status: 503,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
-      })()
-    );
-    return;
-  }
-
-  // 3. Static assets (_next/static, chunks, fonts, icons, css, js): Cache-First
-  event.respondWith(
-    caches.match(request).then((cachedResponse) => {
-      const fetchPromise = fetch(request)
-        .then((networkResponse) => {
+        try {
+          // Network first for fresh navigation
+          const networkResponse = await fetch(request);
           if (
             networkResponse &&
             networkResponse.status === 200 &&
@@ -121,10 +60,46 @@ self.addEventListener("fetch", (event) => {
             caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
           }
           return networkResponse;
-        })
-        .catch(() => cachedResponse);
+        } catch {
+          // Fallback to cache
+          const cachedResponse = await caches.match(request);
+          if (cachedResponse) {
+            return cachedResponse;
+          }
 
-      return cachedResponse || fetchPromise;
+          const appShell = await caches.match("/");
+          if (appShell) {
+            return appShell;
+          }
+
+          return new Response("離線模式，請確認網路連線或已將小說快取至本機", {
+            status: 503,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          });
+        }
+      })()
+    );
+    return;
+  }
+
+  // 3. Static assets (_next/static, chunks, fonts, icons, css, js): Cache-First
+  event.respondWith(
+    caches.match(request).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
+      return fetch(request).then((networkResponse) => {
+        if (
+          networkResponse &&
+          networkResponse.status === 200 &&
+          networkResponse.type === "basic"
+        ) {
+          const clone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+        }
+        return networkResponse;
+      });
     })
   );
 });

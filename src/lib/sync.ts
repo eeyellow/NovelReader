@@ -165,5 +165,11 @@ if (typeof window !== "undefined") {
   window.addEventListener("online", () => {
     flushUnsyncedProgress().catch(console.warn);
   });
+  // Auto-flush pending syncs on startup if already online
+  if (navigator.onLine) {
+    setTimeout(() => {
+      flushUnsyncedProgress().catch(console.warn);
+    }, 2000);
+  }
 }
 
