@@ -93,11 +93,16 @@ export default function ReaderPage() {
   const [clickDirection, setClickDirection] = useState<"standard" | "inverted">("standard");
   const [chineseVariant, setChineseVariant] = useState<"original" | "traditional" | "simplified">("original");
   const [readMode, setReadMode] = useState<"paginated" | "continuous">("paginated");
+  const [textAlign, setTextAlign] = useState<"justify" | "left">("justify");
+  const [paddingMode, setPaddingMode] = useState<"compact" | "normal" | "spacious">("normal");
 
   // UI state
   const [showToolbar, setShowToolbar] = useState(true);
   const [showTOC, setShowTOC] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [chapterSwitchToast, setChapterSwitchToast] = useState<string | null>(null);
+  const [scrubberMode, setScrubberMode] = useState<"chapter" | "book">("chapter");
+  const [scrubBookPercentage, setScrubBookPercentage] = useState<number>(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeDrawerTab, setActiveDrawerTab] = useState<"chapters" | "bookmarks">("chapters");
   const [bookmarks, setBookmarks] = useState<BookmarkType[]>([]);
@@ -214,6 +219,18 @@ export default function ReaderPage() {
     }
   }, [maxWidthMode]);
 
+  // Calculate reader layout padding class
+  const paddingClass = useMemo(() => {
+    switch (paddingMode) {
+      case "compact":
+        return "px-2.5 sm:px-5";
+      case "spacious":
+        return "px-6 sm:px-12";
+      default:
+        return "px-4 sm:px-8";
+    }
+  }, [paddingMode]);
+
   // Load preferences and book content
   useEffect(() => {
     if (!bookId) return;
@@ -228,6 +245,10 @@ export default function ReaderPage() {
       (localStorage.getItem("novel_reader_click_direction") as "standard" | "inverted") || "standard";
     const savedReadMode =
       (localStorage.getItem("novel_reader_read_mode") as "paginated" | "continuous") || "paginated";
+    const savedTextAlign =
+      (localStorage.getItem("novel_reader_text_align") as "justify" | "left") || "justify";
+    const savedPadding =
+      (localStorage.getItem("novel_reader_padding_mode") as "compact" | "normal" | "spacious") || "normal";
 
     setTheme(savedTheme);
     setFontSize(savedFontSize);
@@ -236,6 +257,8 @@ export default function ReaderPage() {
     setMaxWidthMode(savedMaxWidth);
     setClickDirection(savedClickDirection);
     setReadMode(savedReadMode);
+    setTextAlign(savedTextAlign);
+    setPaddingMode(savedPadding);
     document.documentElement.setAttribute("data-theme", savedTheme);
     setGestureConfig(loadGestureConfig());
 
@@ -728,6 +751,18 @@ export default function ReaderPage() {
     totalChars,
   ]);
 
+  // Notify on chapter transition
+  const notifyChapterSwitch = useCallback(
+    (targetIdx: number) => {
+      if (chapters[targetIdx]) {
+        const nextTitle = chapters[targetIdx].title;
+        setChapterSwitchToast(`切換至：${nextTitle}`);
+        setTimeout(() => setChapterSwitchToast(null), 2400);
+      }
+    },
+    [chapters]
+  );
+
   // Page Navigation Methods
   const goToNextPage = useCallback(() => {
     if (currentPage < totalPages - 1) {
@@ -735,9 +770,11 @@ export default function ReaderPage() {
     } else if (currentChapterIdx < chapters.length - 1) {
       pendingPageRef.current = "first";
       isRestoringProgress.current = false;
-      setCurrentChapterIdx((idx) => idx + 1);
+      const nextIdx = currentChapterIdx + 1;
+      setCurrentChapterIdx(nextIdx);
+      notifyChapterSwitch(nextIdx);
     }
-  }, [currentPage, totalPages, currentChapterIdx, chapters.length]);
+  }, [currentPage, totalPages, currentChapterIdx, chapters.length, notifyChapterSwitch]);
 
   const goToPrevPage = useCallback(() => {
     if (currentPage > 0) {
@@ -745,39 +782,48 @@ export default function ReaderPage() {
     } else if (currentChapterIdx > 0) {
       pendingPageRef.current = "last";
       isRestoringProgress.current = false;
-      setCurrentChapterIdx((idx) => idx - 1);
+      const prevIdx = currentChapterIdx - 1;
+      setCurrentChapterIdx(prevIdx);
+      notifyChapterSwitch(prevIdx);
     }
-  }, [currentPage, currentChapterIdx]);
+  }, [currentPage, currentChapterIdx, notifyChapterSwitch]);
 
   const goToNextChapter = useCallback(() => {
     if (currentChapterIdx < chapters.length - 1) {
       pendingPageRef.current = "first";
       isRestoringProgress.current = false;
-      setCurrentChapterIdx((idx) => idx + 1);
+      const nextIdx = currentChapterIdx + 1;
+      setCurrentChapterIdx(nextIdx);
+      notifyChapterSwitch(nextIdx);
     }
-  }, [currentChapterIdx, chapters.length]);
+  }, [currentChapterIdx, chapters.length, notifyChapterSwitch]);
 
   const goToPrevChapter = useCallback(() => {
     if (currentChapterIdx > 0) {
       pendingPageRef.current = "first";
       isRestoringProgress.current = false;
-      setCurrentChapterIdx((idx) => idx - 1);
+      const prevIdx = currentChapterIdx - 1;
+      setCurrentChapterIdx(prevIdx);
+      notifyChapterSwitch(prevIdx);
     }
-  }, [currentChapterIdx]);
+  }, [currentChapterIdx, notifyChapterSwitch]);
 
   const goToFirstPage = useCallback(() => {
     pendingPageRef.current = "first";
     isRestoringProgress.current = false;
     setCurrentChapterIdx(0);
-  }, []);
+    notifyChapterSwitch(0);
+  }, [notifyChapterSwitch]);
 
   const goToLastPage = useCallback(() => {
     if (chapters.length > 0) {
+      const lastIdx = chapters.length - 1;
       pendingPageRef.current = "last";
       isRestoringProgress.current = false;
-      setCurrentChapterIdx(chapters.length - 1);
+      setCurrentChapterIdx(lastIdx);
+      notifyChapterSwitch(lastIdx);
     }
-  }, [chapters.length]);
+  }, [chapters.length, notifyChapterSwitch]);
 
   // Jump to specific chapter from TOC
   const jumpToChapter = (chapter: Chapter) => {
@@ -869,6 +915,43 @@ export default function ReaderPage() {
     setClickDirection(val);
     localStorage.setItem("novel_reader_click_direction", val);
   };
+
+  const updateTextAlign = (val: "justify" | "left") => {
+    setTextAlign(val);
+    localStorage.setItem("novel_reader_text_align", val);
+  };
+
+  const updatePaddingMode = (val: "compact" | "normal" | "spacious") => {
+    setPaddingMode(val);
+    localStorage.setItem("novel_reader_padding_mode", val);
+  };
+
+  // Realtime target preview info when dragging scrubber
+  const scrubTargetInfo = useMemo(() => {
+    if (!isScrubbing || !totalChars) return null;
+    if (scrubberMode === "chapter") {
+      return {
+        title: processedChapterTitle,
+        subtitle: `第 ${scrubPage + 1} / ${totalPages} 頁`,
+      };
+    }
+    const targetOffset = Math.round((scrubBookPercentage / 100) * totalChars);
+    const chIdx = findCurrentChapter(chapters, targetOffset);
+    const chTitle = chapters[chIdx]?.title || "正文";
+    return {
+      title: chTitle,
+      subtitle: `${scrubBookPercentage.toFixed(1)}% (${targetOffset.toLocaleString()} 字)`,
+    };
+  }, [
+    isScrubbing,
+    scrubberMode,
+    scrubPage,
+    totalPages,
+    processedChapterTitle,
+    scrubBookPercentage,
+    totalChars,
+    chapters,
+  ]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -1134,6 +1217,14 @@ export default function ReaderPage() {
         </div>
       )}
 
+      {/* Chapter Switch Toast */}
+      {chapterSwitchToast && (
+        <div className="fixed top-16 inset-x-0 mx-auto w-fit z-50 bg-[var(--accent-color)] text-white text-xs font-semibold px-4 py-2 rounded-full shadow-lg flex items-center space-x-1.5 animate-fade-in truncate max-w-[85vw]">
+          <BookMarked className="w-4 h-4 shrink-0" />
+          <span className="truncate">{chapterSwitchToast}</span>
+        </div>
+      )}
+
       {/* Cloud Conflict Prompt Toast */}
       {conflictPrompt && (
         <div className="fixed top-16 inset-x-4 sm:inset-x-auto sm:right-6 z-50 max-w-md bg-[var(--card-bg)] border-2 border-[var(--accent-color)] rounded-2xl p-4 shadow-2xl animate-bounce-short">
@@ -1198,7 +1289,7 @@ export default function ReaderPage() {
               onUserActivity();
             }
           }}
-          className="flex-1 overflow-hidden relative flex flex-col justify-center px-4 sm:px-8 py-14 select-text cursor-default"
+          className={`flex-1 overflow-hidden relative flex flex-col justify-center ${paddingClass} py-14 select-text cursor-default`}
         >
           <div className={`mx-auto w-full h-full ${maxWidthClass} relative overflow-hidden`}>
             {isLoading ? (
@@ -1237,7 +1328,9 @@ export default function ReaderPage() {
                       return (
                         <p
                           key={i}
-                          className={`novel-content-paragraph leading-relaxed mb-4 text-justify transition-all duration-200 rounded-lg ${
+                          className={`novel-content-paragraph leading-relaxed mb-4 ${
+                            textAlign === "justify" ? "text-justify" : "text-left"
+                          } transition-all duration-200 rounded-lg ${
                             isSpeakingThis
                               ? "bg-[var(--accent-color)]/20 px-2 py-1 shadow-sm font-medium"
                               : ""
@@ -1251,6 +1344,14 @@ export default function ReaderPage() {
                         </p>
                       );
                     })}
+
+                    {/* End of chapter boundary hint */}
+                    {currentPage === totalPages - 1 && currentChapterIdx < chapters.length - 1 && (
+                      <div className="pt-6 pb-2 text-center text-xs text-[var(--text-muted)] opacity-70 flex items-center justify-center space-x-1 select-none">
+                        <span>本章完 • 點擊右側或往左滑進入下一章</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </div>
+                    )}
 
                     {/* End of book marker if on last chapter */}
                     {currentChapterIdx === chapters.length - 1 && (
@@ -1363,29 +1464,79 @@ export default function ReaderPage() {
       >
         <div className="max-w-2xl mx-auto space-y-2">
           {/* Quick Progress Scrubber Slider */}
-          <div className="flex items-center space-x-3 px-1">
-            <span className="text-[11px] text-[var(--text-muted)] font-mono shrink-0">1</span>
+          <div className="relative flex items-center space-x-2 px-1">
+            {/* Realtime Floating Tooltip when scrubbing */}
+            {isScrubbing && scrubTargetInfo && (
+              <div className="absolute -top-11 inset-x-0 mx-auto w-fit max-w-[90%] bg-[var(--accent-color)] text-white text-[11px] font-medium px-3 py-1.5 rounded-xl shadow-xl flex items-center space-x-1.5 animate-fade-in pointer-events-none z-50 truncate">
+                <span className="font-bold truncate">{scrubTargetInfo.title}</span>
+                <span className="opacity-80 shrink-0 font-mono">({scrubTargetInfo.subtitle})</span>
+              </div>
+            )}
+
+            {/* Mode Switch Button */}
+            <button
+              onClick={() => {
+                setScrubberMode((m) => (m === "chapter" ? "book" : "chapter"));
+                setIsScrubbing(false);
+                onUserActivity();
+              }}
+              className="px-2 py-0.5 rounded-md text-[10px] font-semibold border border-[var(--border-color)] hover:border-[var(--accent-color)] text-[var(--accent-color)] bg-[var(--card-bg)] transition-colors shrink-0"
+              title="點擊切換本章/全書滑桿模式"
+            >
+              {scrubberMode === "chapter" ? "本章" : "全書"}
+            </button>
+
+            <span className="text-[11px] text-[var(--text-muted)] font-mono shrink-0">
+              {scrubberMode === "chapter" ? "1" : "0%"}
+            </span>
+
             <input
               type="range"
               min={0}
-              max={Math.max(0, totalPages - 1)}
-              value={isScrubbing ? scrubPage : currentPage}
+              max={scrubberMode === "chapter" ? Math.max(0, totalPages - 1) : 100}
+              step={scrubberMode === "chapter" ? 1 : 0.1}
+              value={
+                isScrubbing
+                  ? scrubberMode === "chapter"
+                    ? scrubPage
+                    : scrubBookPercentage
+                  : scrubberMode === "chapter"
+                  ? currentPage
+                  : currentPercentage
+              }
               onInput={(e) => {
                 setIsScrubbing(true);
-                setScrubPage(Number((e.target as HTMLInputElement).value));
+                const val = Number((e.target as HTMLInputElement).value);
+                if (scrubberMode === "chapter") {
+                  setScrubPage(val);
+                } else {
+                  setScrubBookPercentage(val);
+                }
                 onUserActivity();
               }}
               onChange={(e) => {
-                const targetP = Number(e.target.value);
-                setCurrentPage(targetP);
+                const val = Number(e.target.value);
+                if (scrubberMode === "chapter") {
+                  setCurrentPage(val);
+                } else if (totalChars > 0) {
+                  const targetOffset = Math.round((val / 100) * totalChars);
+                  const chIdx = findCurrentChapter(chapters, targetOffset);
+                  pendingTargetOffset.current = targetOffset;
+                  if (chIdx === currentChapterIdx) {
+                    measurePaginationRef.current();
+                  } else {
+                    setCurrentChapterIdx(chIdx);
+                  }
+                }
                 setIsScrubbing(false);
                 onUserActivity();
               }}
               className="w-full h-1.5 bg-[var(--border-color)] rounded-lg appearance-none cursor-pointer accent-[var(--accent-color)]"
-              aria-label="章節進度滑桿"
+              aria-label={scrubberMode === "chapter" ? "本章頁數滑桿" : "全書進度滑桿"}
             />
+
             <span className="text-[11px] text-[var(--text-muted)] font-mono shrink-0">
-              {totalPages}
+              {scrubberMode === "chapter" ? totalPages : "100%"}
             </span>
           </div>
 
@@ -1969,6 +2120,57 @@ export default function ReaderPage() {
                 >
                   左：下一頁 ｜ 右：上一頁
                 </button>
+              </div>
+            </div>
+
+            {/* Text Alignment */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-[var(--text-muted)]">文字對齊方式</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => updateTextAlign("justify")}
+                  className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
+                    textAlign === "justify"
+                      ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm font-semibold"
+                      : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                  }`}
+                >
+                  兩端對齊 (齊行)
+                </button>
+                <button
+                  onClick={() => updateTextAlign("left")}
+                  className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
+                    textAlign === "left"
+                      ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm font-semibold"
+                      : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                  }`}
+                >
+                  靠左對齊
+                </button>
+              </div>
+            </div>
+
+            {/* Edge Padding */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-[var(--text-muted)]">內文側邊留白</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: "compact", name: "緊湊" },
+                  { id: "normal", name: "標準" },
+                  { id: "spacious", name: "寬裕" },
+                ].map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => updatePaddingMode(p.id as any)}
+                    className={`py-2 rounded-xl border text-xs font-medium transition-all ${
+                      paddingMode === p.id
+                        ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm font-semibold"
+                        : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                ))}
               </div>
             </div>
 

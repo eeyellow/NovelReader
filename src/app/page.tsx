@@ -933,8 +933,19 @@ export default function BookshelfPage() {
               <p className="text-xs text-[var(--text-muted)] max-w-sm mx-auto">
                 {searchTerm
                   ? "找不到符合搜尋條件的小說"
-                  : "快把電腦或手機裡的 .TXT 小說檔案拖曳進來開始閱讀吧！"}
+                  : "快把電腦或手機裡的 .TXT / .EPUB 小說檔案拖曳進來開始閱讀吧！"}
               </p>
+              {!searchTerm && (
+                <div className="pt-2">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--accent-color)] text-white shadow-sm hover:opacity-90 transition-opacity"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>點擊上傳小說</span>
+                  </button>
+                </div>
+              )}
             </div>
           ) : layoutMode === "compact" ? (
             /* Compact List View */
@@ -967,9 +978,15 @@ export default function BookshelfPage() {
 
                     {/* Right: Progress & Cache Status Icon */}
                     <div className="flex items-center space-x-3 shrink-0">
-                      <span className="text-xs font-medium text-[var(--accent-color)] tabular-nums">
-                        {percentage > 0 ? `進度 ${percentage.toFixed(1)}%` : "未讀"}
-                      </span>
+                      {percentage >= 99.9 ? (
+                        <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                          已讀完
+                        </span>
+                      ) : (
+                        <span className="text-xs font-medium text-[var(--accent-color)] tabular-nums">
+                          {percentage > 0 ? `進度 ${percentage.toFixed(1)}%` : "未讀"}
+                        </span>
+                      )}
 
                       {isCached ? (
                         <span
@@ -1057,9 +1074,15 @@ export default function BookshelfPage() {
                     {/* Card Bottom: Progress Bar & Sync Device Info */}
                     <div className="space-y-2.5 pt-2 border-t border-[var(--border-color)]/60">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="font-medium text-[var(--accent-color)]">
-                          進度 {percentage.toFixed(1)}%
-                        </span>
+                        {percentage >= 99.9 ? (
+                          <span className="font-bold text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> 已完讀
+                          </span>
+                        ) : (
+                          <span className="font-medium text-[var(--accent-color)]">
+                            進度 {percentage.toFixed(1)}%
+                          </span>
+                        )}
                         <span className="text-[11px] text-[var(--text-muted)] flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           {formatDate(lastUpdated)}
