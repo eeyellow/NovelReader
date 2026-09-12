@@ -3,7 +3,7 @@
  * @description PWA 離線 Service Worker，支援雙層快取、弱網超時回退、Reader App Shell 與 100% 離線冷啟動
  */
 
-const CACHE_VERSION = "novel-reader-v4";
+const CACHE_VERSION = "novel-reader-0a0ae65-mtyjfanu";
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const READER_SHELL_KEY = "/__reader_shell__";
@@ -14,11 +14,19 @@ const PRECACHE_ASSETS = [
   "/icon.svg",
 ];
 
-// 安裝階段：預先快取核心資源
+// 安裝階段：預先快取核心資源（使用 cache: "reload" 繞過本地 HTTP 快取確保抓取最新內容）
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(STATIC_CACHE).then((cache) => {
-      return cache.addAll(PRECACHE_ASSETS);
+      return Promise.all(
+        PRECACHE_ASSETS.map((url) =>
+          fetch(new Request(url, { cache: "reload" }))
+            .then((res) => {
+              if (res.ok) return cache.put(url, res);
+            })
+            .catch((err) => console.warn(`Precache failed for ${url}:`, err))
+        )
+      );
     })
   );
   self.skipWaiting();

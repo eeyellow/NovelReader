@@ -56,27 +56,38 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen flex flex-col antialiased select-text">
         {children}
-        {/* Service Worker Registration & Controller Refresh */}
+        {/* Service Worker Registration & Silent Auto-Update */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
                 window.addEventListener('load', () => {
-                  navigator.serviceWorker.register('/sw.js').then((registration) => {
-                    // 自動監聽 Service Worker 更新
-                    registration.addEventListener('updatefound', () => {
-                      const newWorker = registration.installing;
-                      if (newWorker) {
-                        newWorker.addEventListener('statechange', () => {
-                          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                            console.log('新版本已就緒，背景已自動更新快取');
-                          }
-                        });
-                      }
-                    });
-                  }).catch(err => {
-                    console.log('SW registration failed: ', err);
+                  let refreshing = false;
+                  const hasExistingController = !!navigator.serviceWorker.controller;
+
+                  // 監聽新版 Service Worker 接管事件：自動重載頁面以套用最新代碼
+                  navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    if (!hasExistingController || refreshing) return;
+                    refreshing = true;
+                    window.location.reload();
                   });
+
+                  navigator.serviceWorker
+                    .register('/sw.js', { updateViaCache: 'none' })
+                    .then((registration) => {
+                      // 1. 每次開啟 App 立即主動向伺服器檢查是否有新版本
+                      registration.update();
+
+                      // 2. 手機 PWA 由背景切換至前景時，立即觸發檢查
+                      document.addEventListener('visibilitychange', () => {
+                        if (document.visibilityState === 'visible') {
+                          registration.update();
+                        }
+                      });
+                    })
+                    .catch((err) => {
+                      console.warn('SW registration failed: ', err);
+                    });
                 });
               }
             `,
