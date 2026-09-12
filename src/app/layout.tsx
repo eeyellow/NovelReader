@@ -56,13 +56,25 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen flex flex-col antialiased select-text">
         {children}
-        {/* Service Worker Registration */}
+        {/* Service Worker Registration & Controller Refresh */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
                 window.addEventListener('load', () => {
-                  navigator.serviceWorker.register('/sw.js').catch(err => {
+                  navigator.serviceWorker.register('/sw.js').then((registration) => {
+                    // 自動監聽 Service Worker 更新
+                    registration.addEventListener('updatefound', () => {
+                      const newWorker = registration.installing;
+                      if (newWorker) {
+                        newWorker.addEventListener('statechange', () => {
+                          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                            console.log('新版本已就緒，背景已自動更新快取');
+                          }
+                        });
+                      }
+                    });
+                  }).catch(err => {
                     console.log('SW registration failed: ', err);
                   });
                 });

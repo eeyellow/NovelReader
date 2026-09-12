@@ -83,6 +83,17 @@ export function useBookshelf() {
     }
     setCachedStatus(cacheMap);
     setLocalProgress(progMap);
+
+    // 若有已快取書籍，於背景預熱通用 Reader App Shell
+    const firstCached = bookList.find((b) => cacheMap[b.id]);
+    if (firstCached && typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
+      setTimeout(() => {
+        navigator.serviceWorker.controller?.postMessage({
+          type: "WARMUP_READER",
+          url: `/reader/${encodeURIComponent(firstCached.id)}`,
+        });
+      }, 1200);
+    }
   }, []);
 
   // 取得書庫清單（離線優先 + 背景非同步雲端同步）
@@ -339,6 +350,13 @@ export function useBookshelf() {
             text,
             data.book.total_chars
           );
+
+          if (typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
+            navigator.serviceWorker.controller.postMessage({
+              type: "WARMUP_READER",
+              url: `/reader/${encodeURIComponent(data.book.id)}`,
+            });
+          }
         }
       }
       await fetchBooks();
@@ -423,6 +441,14 @@ export function useBookshelf() {
         if (text && (!text.startsWith('{"') || !text.includes('"success":false'))) {
           await LocalStore.saveBookContent(book.id, book.title, text, book.total_chars);
           setCachedStatus((prev) => ({ ...prev, [book.id]: true }));
+
+          // 預熱閱讀器 App Shell，確保完全斷網時冷啟動此書籍毫無阻礙
+          if (typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
+            navigator.serviceWorker.controller.postMessage({
+              type: "WARMUP_READER",
+              url: `/reader/${encodeURIComponent(book.id)}`,
+            });
+          }
         } else {
           throw new Error("伺服器回應內容異常");
         }

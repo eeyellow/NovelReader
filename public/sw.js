@@ -1,23 +1,36 @@
-const CACHE_NAME = "novel-reader-v3";
-const STATIC_ASSETS = ["/", "/manifest.json", "/icon.svg"];
+/**
+ * @file sw.js
+ * @description PWA 離線 Service Worker，支援雙層快取、弱網超時回退、Reader App Shell 與 100% 離線冷啟動
+ */
 
-// Install: Precache shell and static assets
+const CACHE_VERSION = "novel-reader-v4";
+const STATIC_CACHE = `static-${CACHE_VERSION}`;
+const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
+const READER_SHELL_KEY = "/__reader_shell__";
+
+const PRECACHE_ASSETS = [
+  "/",
+  "/manifest.json",
+  "/icon.svg",
+];
+
+// 安裝階段：預先快取核心資源
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
+    caches.open(STATIC_CACHE).then((cache) => {
+      return cache.addAll(PRECACHE_ASSETS);
     })
   );
   self.skipWaiting();
 });
 
-// Activate: Clean up older cache versions
+// 啟動階段：清理過期版本的快取空間
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
         keys.map((key) => {
-          if (key !== CACHE_NAME) {
+          if (key !== STATIC_CACHE && key !== RUNTIME_CACHE) {
             return caches.delete(key);
           }
         })
@@ -27,52 +40,94 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Fetch: Strategy routing
+/**
+ * 封裝帶超時限制的 fetch，避免弱網環境下掛起過久
+ */
+function fetchWithTimeout(request, timeoutMs = 2500) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("Network timeout"));
+    }, timeoutMs);
+
+    fetch(request)
+      .then((response) => {
+        clearTimeout(timer);
+        resolve(response);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+// 請求攔截路由策略
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Ignore non-GET and cross-origin requests
+  // 1. 忽略非 GET 或跨域請求
   if (request.method !== "GET" || url.origin !== self.location.origin) {
     return;
   }
 
-  // 1. API routes: Direct network-only.
-  // DO NOT fake status 200 offline fallback for APIs, as /api/books/[id]/content returns raw text!
-  // Faking 200 JSON causes raw novel text to be overwritten by fallback JSON strings in IndexedDB.
+  // 2. API 路由：強制 Network-Only，絕不偽造 200 回退，避免覆蓋 IndexedDB 正確內容
   if (url.pathname.startsWith("/api/")) {
     return;
   }
 
-  // 2. HTML Navigation requests (e.g. /, /reader/xxx)
+  // 3. HTML 導航請求 (Navigation: /, /reader/xxx)
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
         try {
-          // Network first for fresh navigation
-          const networkResponse = await fetch(request);
-          if (
-            networkResponse &&
-            networkResponse.status === 200 &&
-            networkResponse.type === "basic"
-          ) {
+          // 優先發送網路請求（帶 2.5 秒超時限制），獲取最新頁面
+          const networkResponse = await fetchWithTimeout(request, 2500);
+          if (networkResponse && networkResponse.status === 200 && networkResponse.type === "basic") {
             const clone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+            caches.open(RUNTIME_CACHE).then((cache) => {
+              cache.put(request, clone);
+              // 若造訪的是閱讀器頁面，額外備份一份通用 Reader Shell 供其他書籍離線冷啟動
+              if (url.pathname.startsWith("/reader/")) {
+                cache.put(READER_SHELL_KEY, networkResponse.clone());
+              }
+            });
           }
           return networkResponse;
         } catch {
-          // Fallback to cache
-          const cachedResponse = await caches.match(request);
-          if (cachedResponse) {
-            return cachedResponse;
+          // 網路超時或完全斷網時，啟用快取回退流程
+          const runtimeCache = await caches.open(RUNTIME_CACHE);
+          const staticCache = await caches.open(STATIC_CACHE);
+
+          // (A) 精準匹配當前請求 URL
+          const exactMatch = await runtimeCache.match(request);
+          if (exactMatch) {
+            return exactMatch;
           }
 
-          const appShell = await caches.match("/");
+          // (B) 若為閱讀器路由 (/reader/*)，回退至通用 Reader Shell
+          if (url.pathname.startsWith("/reader/")) {
+            const readerShell = await runtimeCache.match(READER_SHELL_KEY);
+            if (readerShell) {
+              return readerShell;
+            }
+
+            // 尋找快取中任意一個現有的 /reader/ 頁面作為 Shell
+            const requests = await runtimeCache.keys();
+            const anyReaderReq = requests.find((req) => new URL(req.url).pathname.startsWith("/reader/"));
+            if (anyReaderReq) {
+              const anyReaderResp = await runtimeCache.match(anyReaderReq);
+              if (anyReaderResp) return anyReaderResp;
+            }
+          }
+
+          // (C) 回退至書架首頁 App Shell
+          const appShell = (await staticCache.match("/")) || (await runtimeCache.match("/"));
           if (appShell) {
             return appShell;
           }
 
-          return new Response("離線模式，請確認網路連線或已將小說快取至本機", {
+          return new Response("離線模式，請確認該書籍已快取至本機後重新開啟", {
             status: 503,
             headers: { "Content-Type": "text/plain; charset=utf-8" },
           });
@@ -82,24 +137,60 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 3. Static assets (_next/static, chunks, fonts, icons, css, js): Cache-First
-  event.respondWith(
-    caches.match(request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      return fetch(request).then((networkResponse) => {
-        if (
-          networkResponse &&
-          networkResponse.status === 200 &&
-          networkResponse.type === "basic"
-        ) {
-          const clone = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+  // 4. Next.js 靜態資源 (_next/static/chunks, css, media): Cache-First
+  if (url.pathname.startsWith("/_next/static/")) {
+    event.respondWith(
+      caches.open(STATIC_CACHE).then(async (cache) => {
+        const cachedResponse = await cache.match(request);
+        if (cachedResponse) {
+          return cachedResponse;
         }
-        return networkResponse;
-      });
+
+        try {
+          const networkResponse = await fetch(request);
+          if (networkResponse && networkResponse.status === 200) {
+            cache.put(request, networkResponse.clone());
+          }
+          return networkResponse;
+        } catch {
+          return new Response("", { status: 404 });
+        }
+      })
+    );
+    return;
+  }
+
+  // 5. 其他靜態資產與圖片 (icon.svg, manifest, fonts 等): Stale-While-Revalidate
+  event.respondWith(
+    caches.open(STATIC_CACHE).then(async (cache) => {
+      const cachedResponse = await cache.match(request);
+      const networkFetch = fetch(request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            cache.put(request, networkResponse.clone());
+          }
+          return networkResponse;
+        })
+        .catch(() => cachedResponse);
+
+      return cachedResponse || networkFetch;
     })
   );
+});
+
+// 監聽來自頁面的溫熱暖機指令 (Warm-up App Shell)
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "WARMUP_READER" && event.data.url) {
+    const readerUrl = event.data.url;
+    fetch(readerUrl)
+      .then((res) => {
+        if (res && res.status === 200) {
+          caches.open(RUNTIME_CACHE).then((cache) => {
+            cache.put(readerUrl, res.clone());
+            cache.put(READER_SHELL_KEY, res.clone());
+          });
+        }
+      })
+      .catch((e) => console.warn("Warmup reader failed", e));
+  }
 });

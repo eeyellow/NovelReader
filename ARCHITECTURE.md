@@ -116,3 +116,13 @@ src/
 - 監聽 `visibilitychange`、`pagehide` 與 `beforeunload` 事件。
 - 關閉分頁或鎖定手機螢幕時，優先使用 `navigator.sendBeacon` 攜帶當前 `char_offset` 回傳伺服器，確保進度不流失。
 - 跨裝置同步偵測：若雲端有更新的閱讀進度，系統會主動跳出衝突提示 Toast，供使用者決定保留本機位置或跳轉同步。
+
+### 4. 100% 離線冷啟動 (PWA App Shell & Service Worker 雙層架構)
+1. **靜態與執行時雙層快取 (`STATIC_CACHE` & `RUNTIME_CACHE`)**：
+   - 核心靜態資產（App Shell、CSS、JS chunks、SVG icons）預先於 `install` 階段快取。
+   - 具有永久指紋 hash 的 Next.js chunks (`/_next/static/*`) 採用 **Cache-First** 策略，達成毫秒級離線載入。
+2. **弱網 2.5 秒超時回退 (`fetchWithTimeout`)**：
+   - 針對 Navigation 請求設定 2500ms 逾時門檻，避免在地下鐵或電梯等弱網環境下瀏覽器掛起等待數十秒，逾時立即平滑降級回退本機快取。
+3. **通用 Reader App Shell (`/__reader_shell__`)**：
+   - 在使用者於線上開啟或快取任何書籍時，背景自動溫熱備份一份通用閱讀器 HTML 骨架與 JS chunks。
+   - 當處於完全斷網狀態、冷啟動開啟一本「從未在線上打開過但已存入 IndexedDB」的小說時，Service Worker 自動回退提供通用 Reader Shell，React 客戶端水合後直接由 IndexedDB 載入內文，杜絕白畫面。
