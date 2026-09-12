@@ -39,6 +39,14 @@ interface NovelReaderDB extends DBSchema {
     };
     indexes: { "by_book": string };
   };
+  chapters_cache: {
+    key: string; // book_id
+    value: {
+      book_id: string;
+      chapters: any[];
+      cached_at: string;
+    };
+  };
   settings: {
     key: string;
     value: any;
@@ -46,7 +54,7 @@ interface NovelReaderDB extends DBSchema {
 }
 
 const DB_NAME = "novel_reader_local";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase<NovelReaderDB>> | null = null;
 
@@ -69,6 +77,9 @@ export function getLocalDB() {
         if (!db.objectStoreNames.contains("bookmarks")) {
           const bmStore = db.createObjectStore("bookmarks", { keyPath: "id" });
           bmStore.createIndex("by_book", "book_id");
+        }
+        if (!db.objectStoreNames.contains("chapters_cache")) {
+          db.createObjectStore("chapters_cache", { keyPath: "book_id" });
         }
       },
     });
@@ -123,6 +134,7 @@ export const LocalStore = {
     if (!db) return;
     await db.delete("books_content", bookId);
     await db.delete("local_progress", bookId);
+    await db.delete("chapters_cache", bookId);
     try {
       const tx = db.transaction("bookmarks", "readwrite");
       const index = tx.store.index("by_book");
@@ -256,6 +268,23 @@ export const LocalStore = {
     const db = await getLocalDB();
     if (!db) return;
     await db.put("settings", value, key);
+  },
+
+  async saveChapters(bookId: string, chapters: any[]) {
+    const db = await getLocalDB();
+    if (!db || !chapters) return;
+    await db.put("chapters_cache", {
+      book_id: bookId,
+      chapters,
+      cached_at: new Date().toISOString(),
+    });
+  },
+
+  async getChapters(bookId: string): Promise<any[] | null> {
+    const db = await getLocalDB();
+    if (!db) return null;
+    const record = await db.get("chapters_cache", bookId);
+    return record?.chapters || null;
   },
 };
 

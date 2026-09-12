@@ -77,6 +77,11 @@ export async function POST(req: NextRequest) {
     const totalChars = text.length;
     const fileSize = Buffer.byteLength(text, "utf-8");
 
+    // 於後端 Node.js 環境預先解析章節結構，減輕前端瀏覽器主執行緒負荷
+    const { extractChapters } = await import("@/lib/parser");
+    const parsedChapters = extractChapters(text);
+    const chaptersJson = JSON.stringify(parsedChapters);
+
     // Insert to DB
     BookModel.create({
       id: bookId,
@@ -84,6 +89,7 @@ export async function POST(req: NextRequest) {
       file_name: fileName,
       file_size: fileSize,
       total_chars: totalChars,
+      chapters_json: chaptersJson,
     });
 
     const createdBook = BookModel.getById(bookId);

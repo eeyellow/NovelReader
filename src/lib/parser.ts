@@ -54,7 +54,62 @@ export function extractChapters(text: string): Chapter[] {
     chapters[i].length = nextOffset - chapters[i].charOffset;
   }
 
-  return chapters;
+  // 大長篇小說優化：若單章字數超過 15,000 字，自動在段落換行邊界進行分片分割，防止 DOM 節點膨脹與 CSS Columns 卡頓
+  const MAX_CHUNK_LENGTH = 15000;
+  const chunkedChapters: Chapter[] = [];
+
+  for (const chapter of chapters) {
+    const chLen = chapter.length || 0;
+    if (chLen <= MAX_CHUNK_LENGTH) {
+      chunkedChapters.push(chapter);
+      continue;
+    }
+
+    // 需分割的超大章節
+    let currentStart = chapter.charOffset;
+    const chapterEnd = chapter.charOffset + chLen;
+    let partNum = 1;
+
+    while (currentStart < chapterEnd) {
+      const remainingLen = chapterEnd - currentStart;
+      if (remainingLen <= MAX_CHUNK_LENGTH) {
+        chunkedChapters.push({
+          index: 0,
+          title: partNum === 1 ? chapter.title : `${chapter.title} (${partNum})`,
+          charOffset: currentStart,
+          length: remainingLen,
+        });
+        break;
+      }
+
+      // 在 MAX_CHUNK_LENGTH 附近尋找最近的段落換行符號 (\n)
+      const targetSplitPoint = currentStart + MAX_CHUNK_LENGTH;
+      const searchWindow = text.slice(targetSplitPoint - 500, targetSplitPoint + 500);
+      const newlineIdx = searchWindow.lastIndexOf("\n");
+
+      let splitOffset = targetSplitPoint;
+      if (newlineIdx !== -1) {
+        splitOffset = targetSplitPoint - 500 + newlineIdx + 1;
+      }
+
+      const chunkLength = splitOffset - currentStart;
+      chunkedChapters.push({
+        index: 0,
+        title: partNum === 1 ? `${chapter.title} (1)` : `${chapter.title} (${partNum})`,
+        charOffset: currentStart,
+        length: chunkLength,
+      });
+
+      currentStart = splitOffset;
+      partNum++;
+    }
+  }
+
+  // 重新建立連續章節索引
+  return chunkedChapters.map((ch, idx) => ({
+    ...ch,
+    index: idx,
+  }));
 }
 
 /**

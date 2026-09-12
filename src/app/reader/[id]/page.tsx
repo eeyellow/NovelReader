@@ -171,6 +171,7 @@ export default function ReaderPage() {
       let bookText = "";
       let bookTitle = "未知小說";
       let bookChars = 0;
+      let serverChapters: Chapter[] | null = null;
 
       // 1. 優先從本機 IndexedDB 快取讀取
       try {
@@ -215,6 +216,10 @@ export default function ReaderPage() {
             bookTitle = metaData.book?.title || "未命名小說";
             bookChars = bookText.length;
 
+            if (Array.isArray(metaData.chapters) && metaData.chapters.length > 0) {
+              serverChapters = metaData.chapters;
+            }
+
             await LocalStore.saveBookContent(bookId, bookTitle, bookText, bookChars);
           } else {
             throw new Error("無法讀取小說資料");
@@ -234,7 +239,24 @@ export default function ReaderPage() {
       setFullText(bookText);
       setTotalChars(bookChars);
 
-      const parsedChapters = extractChapters(bookText);
+      // 大長篇優化：優先從本機 IndexedDB 快取讀取章節索引，達成 0ms 瞬間開書
+      let parsedChapters: Chapter[] | null = null;
+      try {
+        parsedChapters = await LocalStore.getChapters(bookId);
+      } catch (e) {
+        console.warn("讀取本機章節快取失敗:", e);
+      }
+
+      if (!parsedChapters && serverChapters && serverChapters.length > 0) {
+        parsedChapters = serverChapters;
+        LocalStore.saveChapters(bookId, parsedChapters).catch(console.warn);
+      }
+
+      if (!parsedChapters || parsedChapters.length === 0) {
+        parsedChapters = extractChapters(bookText);
+        LocalStore.saveChapters(bookId, parsedChapters).catch(console.warn);
+      }
+
       setChapters(parsedChapters);
 
       bookmarkHook.loadBookmarks(bookId);

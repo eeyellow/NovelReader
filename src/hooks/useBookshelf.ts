@@ -266,6 +266,17 @@ export function useBookshelf() {
           const text = await res.text();
           await LocalStore.saveBookContent(book.id, book.title, text, book.total_chars);
           setCachedStatus((prev) => ({ ...prev, [book.id]: true }));
+
+          // 並行快取章節索引，達成大長篇秒開
+          try {
+            const metaRes = await fetch(`/api/books/${book.id}`);
+            if (metaRes.ok) {
+              const metaData = await metaRes.json();
+              if (Array.isArray(metaData.chapters) && metaData.chapters.length > 0) {
+                await LocalStore.saveChapters(book.id, metaData.chapters);
+              }
+            }
+          } catch (e) {}
         }
       } catch (e) {
         console.warn(`Failed to cache ${book.title}:`, e);
@@ -350,6 +361,15 @@ export function useBookshelf() {
             text,
             data.book.total_chars
           );
+
+          if (data.book?.chapters_json) {
+            try {
+              const chs = JSON.parse(data.book.chapters_json);
+              if (Array.isArray(chs) && chs.length > 0) {
+                await LocalStore.saveChapters(data.book.id, chs);
+              }
+            } catch (e) {}
+          }
 
           if (typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
             navigator.serviceWorker.controller.postMessage({
@@ -441,6 +461,17 @@ export function useBookshelf() {
         if (text && (!text.startsWith('{"') || !text.includes('"success":false'))) {
           await LocalStore.saveBookContent(book.id, book.title, text, book.total_chars);
           setCachedStatus((prev) => ({ ...prev, [book.id]: true }));
+
+          // 並行快取章節索引結構
+          try {
+            const metaRes = await fetch(`/api/books/${book.id}`);
+            if (metaRes.ok) {
+              const metaData = await metaRes.json();
+              if (Array.isArray(metaData.chapters) && metaData.chapters.length > 0) {
+                await LocalStore.saveChapters(book.id, metaData.chapters);
+              }
+            }
+          } catch (e) {}
 
           // 預熱閱讀器 App Shell，確保完全斷網時冷啟動此書籍毫無阻礙
           if (typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {

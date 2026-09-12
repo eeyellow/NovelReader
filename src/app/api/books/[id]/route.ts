@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BookModel } from "@/lib/db";
+import { BookModel, UPLOADS_DIR } from "@/lib/db";
+import fs from "fs";
+import path from "path";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,7 +19,36 @@ export async function GET(
         { status: 404 }
       );
     }
-    return NextResponse.json({ success: true, book });
+
+    let parsedChapters: any[] | null = null;
+    if (book.chapters_json) {
+      try {
+        parsedChapters = JSON.parse(book.chapters_json);
+      } catch (e) {
+        console.warn("Failed to parse chapters_json:", e);
+      }
+    }
+
+    // 若為既有舊書且尚未存有預解析章節，於後端自動補齊解析並持久化
+    if (!parsedChapters || parsedChapters.length === 0) {
+      try {
+        const filePath = path.join(UPLOADS_DIR, book.file_name);
+        if (fs.existsSync(filePath)) {
+          const content = fs.readFileSync(filePath, "utf-8");
+          const { extractChapters } = await import("@/lib/parser");
+          parsedChapters = extractChapters(content);
+          BookModel.updateChapters(id, JSON.stringify(parsedChapters));
+        }
+      } catch (e) {
+        console.warn("Lazy chapter generation failed:", e);
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      book,
+      chapters: parsedChapters || [],
+    });
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: error.message || "Failed to fetch book" },

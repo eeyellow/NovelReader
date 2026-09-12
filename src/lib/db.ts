@@ -91,6 +91,13 @@ export function getDb(): Database.Database {
       if (!colNames.has("total_pages")) {
         dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN total_pages INTEGER");
       }
+
+      // Ensure books table has chapters_json column for server-side preprocessed chapters
+      const bookColumns = dbInstance.prepare("PRAGMA table_info(books)").all() as Array<{ name: string }>;
+      const bookColNames = new Set(bookColumns.map((c) => c.name));
+      if (!bookColNames.has("chapters_json")) {
+        dbInstance.exec("ALTER TABLE books ADD COLUMN chapters_json TEXT");
+      }
     } catch (e) {
       console.warn("Table migration notice:", e);
     }
@@ -106,6 +113,7 @@ export interface Book {
   total_chars: number;
   created_at: string;
   updated_at: string;
+  chapters_json?: string;
   char_offset?: number;
   percentage?: number;
   last_device?: string;
@@ -173,13 +181,25 @@ export const BookModel = {
     file_name: string;
     file_size: number;
     total_chars: number;
+    chapters_json?: string;
   }) {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO books (id, title, file_name, file_size, total_chars)
-      VALUES (@id, @title, @file_name, @file_size, @total_chars)
+      INSERT INTO books (id, title, file_name, file_size, total_chars, chapters_json)
+      VALUES (@id, @title, @file_name, @file_size, @total_chars, @chapters_json)
     `);
-    return stmt.run(book);
+    return stmt.run({
+      ...book,
+      chapters_json: book.chapters_json || null,
+    });
+  },
+
+  updateChapters(id: string, chaptersJson: string) {
+    const db = getDb();
+    const stmt = db.prepare(`
+      UPDATE books SET chapters_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `);
+    return stmt.run(chaptersJson, id);
   },
 
   delete(id: string) {
