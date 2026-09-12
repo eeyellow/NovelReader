@@ -58,12 +58,16 @@ docker compose up -d --build
 
 ---
 
-## 📁 目錄結構
+## 📁 目錄結構與架構設計
 
-- `src/app/page.tsx`：書架首頁（上傳、搜尋、離線標籤、裝置名稱設定、主題切換）
-- `src/app/reader/[id]/page.tsx`：閱讀器頁面（章節目錄、字元偏移量定位、排版偏好、自動同步）
-- `src/app/api/`：REST API（書籍清單、上傳、全文下載、進度儲存）
-- `src/lib/db.ts`：SQLite (better-sqlite3) 資料模型
-- `src/lib/idb.ts`：前端 IndexedDB 離線快取封裝
-- `src/lib/sync.ts`：Page Visibility 與 sendBeacon 進度同步器
-- `src/lib/encoding.ts`：jschardet 自動編碼偵測與轉碼
+本專案遵循 **Clean Code** 與 **SOLID 原則**，徹底解耦狀態管理與視圖組件：
+
+- `src/app/page.tsx`：書架主頁容器（精簡協調層）
+- `src/app/reader/[id]/page.tsx`：閱讀器主頁容器（精簡協調層）
+- `src/components/bookshelf/`：書架模組化展示組件（Header、UploadBar、Toolbar、BookCard、Modals）
+- `src/components/reader/`：閱讀器模組化展示組件（Header、Footer、Paginated/Continuous Viewport、Drawers、TTS、Search）
+- `src/hooks/`：業務邏輯與狀態管理 Hooks（`useBookshelf`、`useReaderPagination`、`useReaderSettings`、`useReaderBookmarks`、`useReaderSearch`）
+- `src/types/`：TypeScript 型別系統定義（`bookshelf.ts`、`reader.ts`）
+- `src/constants/themes.ts`：全域主題與字型 Single Source of Truth
+- `src/lib/`：底層資料庫、轉碼、正則解析與進度同步封裝
+- 詳細架構設計與資料流可參閱 [ARCHITECTURE.md](file:///C:/Users/eeyellow/source/NovelReader/ARCHITECTURE.md)。
