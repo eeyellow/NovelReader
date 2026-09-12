@@ -96,18 +96,30 @@ export function useBookshelf() {
     }
   }, []);
 
-  // 取得書庫清單（離線優先 + 背景非同步雲端同步）
+  // 取得書庫清單（離線優先 + 背景非同步雲端同步 + 本機快取智能合併）
   const fetchBooks = useCallback(async () => {
-    // 1. 離線優先：立即讀取本機快取書籍清單與進度，做到 0 延遲秒開畫面
+    // 1. 離線優先：立即讀取本機快取與 IndexedDB 內容，做到 0 延遲秒開畫面，且防止離線書籍被拋棄
     try {
-      let cachedList = await LocalStore.getSetting<Book[]>("cached_book_list", []);
-      if (!cachedList || cachedList.length === 0) {
-        cachedList = await LocalStore.getAllCachedBooks();
+      const [cachedList, localContentBooks] = await Promise.all([
+        LocalStore.getSetting<Book[]>("cached_book_list", []),
+        LocalStore.getAllCachedBooks(),
+      ]);
+
+      const initialMap = new Map<string, Book>();
+      // 先放 IndexedDB 內實體快取的書
+      for (const b of localContentBooks) {
+        initialMap.set(b.id, b);
       }
-      if (cachedList && cachedList.length > 0) {
-        setBooks(cachedList);
+      // 再放先前快取的列表（補充可能有的章節、字數等後設資料）
+      for (const b of cachedList || []) {
+        initialMap.set(b.id, { ...initialMap.get(b.id), ...b });
+      }
+
+      const initialBooks = Array.from(initialMap.values());
+      if (initialBooks.length > 0) {
+        setBooks(initialBooks);
         setLoading(false);
-        checkAllCaches(cachedList);
+        checkAllCaches(initialBooks);
       }
     } catch (e) {
       console.warn("讀取本機離線快取失敗", e);
@@ -124,10 +136,28 @@ export function useBookshelf() {
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.books)) {
-          setBooks(data.books);
+          // 關鍵修正：將伺服器書籍與本機 IndexedDB 快取書籍合併，絕不單向覆寫遺失本機書籍
+          const localContentBooks = await LocalStore.getAllCachedBooks();
+          const mergedMap = new Map<string, Book>();
+
+          // 先填入本機 IndexedDB 實體快取書（防止伺服器端缺少或斷開時被消除）
+          for (const b of localContentBooks) {
+            mergedMap.set(b.id, b);
+          }
+
+          // 再以伺服器回傳的權威書單補充/更新
+          for (const b of data.books as Book[]) {
+            mergedMap.set(b.id, {
+              ...mergedMap.get(b.id),
+              ...b,
+            });
+          }
+
+          const mergedBooks = Array.from(mergedMap.values());
+          setBooks(mergedBooks);
           setIsOffline(false);
-          checkAllCaches(data.books);
-          LocalStore.setSetting("cached_book_list", data.books);
+          checkAllCaches(mergedBooks);
+          LocalStore.setSetting("cached_book_list", mergedBooks);
           flushUnsyncedProgress().catch(console.warn);
         }
       } else {
@@ -136,16 +166,21 @@ export function useBookshelf() {
     } catch (e) {
       console.warn("伺服器無法連線或逾時，保持離線快取模式", e);
       setIsOffline(true);
-      const cached = await LocalStore.getSetting<Book[]>("cached_book_list", []);
-      if (cached && cached.length > 0) {
-        setBooks(cached);
-        checkAllCaches(cached);
-      } else {
-        const localBooks = await LocalStore.getAllCachedBooks();
-        if (localBooks && localBooks.length > 0) {
-          setBooks(localBooks);
-          checkAllCaches(localBooks);
-        }
+      const [cached, localBooks] = await Promise.all([
+        LocalStore.getSetting<Book[]>("cached_book_list", []),
+        LocalStore.getAllCachedBooks(),
+      ]);
+      const fallbackMap = new Map<string, Book>();
+      for (const b of localBooks || []) {
+        fallbackMap.set(b.id, b);
+      }
+      for (const b of cached || []) {
+        fallbackMap.set(b.id, { ...fallbackMap.get(b.id), ...b });
+      }
+      const fallbackBooks = Array.from(fallbackMap.values());
+      if (fallbackBooks.length > 0) {
+        setBooks(fallbackBooks);
+        checkAllCaches(fallbackBooks);
       }
     } finally {
       setLoading(false);
@@ -588,14 +623,22 @@ export function useBookshelf() {
 
     const list = books.filter((b) => {
       if (!rawQ) return true;
-      const lowerTitle = b.title.toLowerCase();
+      const lowerTitle = (b.title || "").toLowerCase();
       return lowerTitle.includes(rawQ) || lowerTitle.includes(tradQ) || lowerTitle.includes(simpQ);
     });
+
+    // 安全解析時間字串，支援 SQLite "YYYY-MM-DD HH:mm:ss" 與 ISO 8601，避免 WebKit/Safari 出現 NaN 排序錯亂
+    const parseTime = (val?: string) => {
+      if (!val) return 0;
+      const iso = val.includes(" ") && !val.includes("T") ? val.replace(" ", "T") + "Z" : val;
+      const t = new Date(iso).getTime();
+      return isNaN(t) ? 0 : t;
+    };
 
     return list.sort((a, b) => {
       let cmp = 0;
       if (sortBy === "title") {
-        cmp = a.title.localeCompare(b.title, "zh-Hant");
+        cmp = (a.title || "").localeCompare(b.title || "", "zh-Hant");
       } else if (sortBy === "progress") {
         const aProg = localProgress[a.id]?.percentage ?? a.percentage ?? 0;
         const bProg = localProgress[b.id]?.percentage ?? b.percentage ?? 0;
@@ -605,12 +648,16 @@ export function useBookshelf() {
         const bChars = b.total_chars || 0;
         cmp = aChars - bChars;
       } else {
-        const aTime = new Date(
-          localProgress[a.id]?.updated_at || a.progress_updated_at || a.created_at
-        ).getTime();
-        const bTime = new Date(
-          localProgress[b.id]?.updated_at || b.progress_updated_at || b.created_at
-        ).getTime();
+        const aTime = Math.max(
+          parseTime(localProgress[a.id]?.updated_at),
+          parseTime(a.progress_updated_at),
+          parseTime(a.created_at)
+        );
+        const bTime = Math.max(
+          parseTime(localProgress[b.id]?.updated_at),
+          parseTime(b.progress_updated_at),
+          parseTime(b.created_at)
+        );
         cmp = aTime - bTime;
       }
 

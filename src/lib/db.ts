@@ -3,7 +3,21 @@ import fs from "fs";
 import path from "path";
 
 // Define storage directory: can be overridden via DATA_DIR environment variable (e.g. for Docker / NAS mount)
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+function resolveDataDir(): string {
+  if (process.env.DATA_DIR) {
+    return process.env.DATA_DIR;
+  }
+  // If running inside .next/standalone, prioritize the root project data directory if present
+  if (process.cwd().includes(".next")) {
+    const parentRootData = path.resolve(process.cwd(), "../../data");
+    if (fs.existsSync(parentRootData)) {
+      return parentRootData;
+    }
+  }
+  return path.join(process.cwd(), "data");
+}
+
+const DATA_DIR = resolveDataDir();
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_PATH = path.join(DATA_DIR, "novel_reader.db");
 

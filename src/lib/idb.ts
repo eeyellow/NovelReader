@@ -82,6 +82,23 @@ export function getLocalDB() {
           db.createObjectStore("chapters_cache", { keyPath: "book_id" });
         }
       },
+      blocked() {
+        console.warn("IndexedDB upgrade blocked: Please close other tabs of NovelReader");
+      },
+      blocking() {
+        console.warn("IndexedDB blocking: Closing connection to allow upgrade");
+        if (dbPromise) {
+          dbPromise.then((db) => db.close()).catch(() => {});
+          dbPromise = null;
+        }
+      },
+      terminated() {
+        dbPromise = null;
+      },
+    }).catch((err) => {
+      console.error("Failed to open IndexedDB:", err);
+      dbPromise = null;
+      throw err;
     });
   }
   return dbPromise;
@@ -221,18 +238,25 @@ export const LocalStore = {
   },
 
   async getAllCachedBooks(): Promise<Book[]> {
-    const db = await getLocalDB();
-    if (!db) return [];
-    const contents = await db.getAll("books_content");
-    return contents.map((c) => ({
-      id: c.book_id,
-      title: c.title,
-      file_name: `${c.title}.txt`,
-      file_size: c.content?.length || 0,
-      total_chars: c.total_chars || c.content?.length || 0,
-      created_at: c.cached_at || new Date().toISOString(),
-      updated_at: c.cached_at || new Date().toISOString(),
-    }));
+    try {
+      const db = await getLocalDB();
+      if (!db) return [];
+      const contents = await db.getAll("books_content");
+      return contents
+        .filter((c) => c && c.book_id)
+        .map((c) => ({
+          id: c.book_id,
+          title: c.title || "未命名小說",
+          file_name: `${c.title || c.book_id}.txt`,
+          file_size: c.content?.length || 0,
+          total_chars: c.total_chars || c.content?.length || 0,
+          created_at: c.cached_at || new Date().toISOString(),
+          updated_at: c.cached_at || new Date().toISOString(),
+        }));
+    } catch (e) {
+      console.warn("Failed to get all cached books from IndexedDB:", e);
+      return [];
+    }
   },
 
   async saveBookmark(bookmark: {

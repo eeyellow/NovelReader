@@ -3,7 +3,7 @@
  * @description PWA 離線 Service Worker，支援雙層快取、弱網超時回退、Reader App Shell 與 100% 離線冷啟動
  */
 
-const CACHE_VERSION = "novel-reader-0a0ae65-mtyjfanu";
+const CACHE_VERSION = "novel-reader-659653c-mtyjw4wt";
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const READER_SHELL_KEY = "/__reader_shell__";
