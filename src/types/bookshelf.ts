@@ -4,6 +4,7 @@
  */
 
 import { Book } from "@/lib/db";
+import { UserSession } from "@/lib/auth";
 
 /** 書庫排序依據欄位 */
 export type SortField = "updated" | "title" | "progress" | "chars";
@@ -37,6 +38,7 @@ export interface BookCardItemProps {
     updated_at?: string;
   };
   layoutMode: ShelfLayoutMode;
+  currentUser?: UserSession | null;
   onCache: (e: React.MouseEvent, book: Book) => void;
   onDelete: (e: React.MouseEvent, book: Book) => void;
   onOpenRename: (e: React.MouseEvent, book: Book) => void;

@@ -12,6 +12,7 @@ import { isSimplifiedChinese, convertToTraditional, convertToSimplified } from "
 import { flushUnsyncedProgress } from "@/lib/sync";
 import { parseSafeTime } from "@/lib/format";
 import { SortField, SortOrder, ShelfLayoutMode, EditingBookState, CacheAllProgress } from "@/types/bookshelf";
+import { UserSession } from "@/lib/auth";
 
 export function useBookshelf() {
   const [books, setBooks] = useState<Book[]>([]);
@@ -43,6 +44,9 @@ export function useBookshelf() {
   const [isCachingAll, setIsCachingAll] = useState(false);
   const [cacheAllProgress, setCacheAllProgress] = useState<CacheAllProgress | null>(null);
   const [cachingBookIds, setCachingBookIds] = useState<Record<string, boolean>>({});
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
+  const [googleConfigured, setGoogleConfigured] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
@@ -111,7 +115,7 @@ export function useBookshelf() {
   }, [showThemeMenu]);
 
   // 檢查所有書籍快取與本機進度
-  const checkAllCaches = useCallback(async (bookList: Book[]) => {
+  const checkAllCaches = useCallback(async (bookList: Book[], userId?: string) => {
     const cacheMap: Record<string, boolean> = {};
     const progMap: Record<string, any> = {};
 
@@ -124,7 +128,7 @@ export function useBookshelf() {
         await LocalStore.updateBookTitle(book.id, book.title);
       }
 
-      const prog = await LocalStore.getLocalProgress(book.id);
+      const prog = await LocalStore.getLocalProgress(book.id, userId || "default_user");
       if (prog) {
         progMap[book.id] = prog;
       }
@@ -183,6 +187,9 @@ export function useBookshelf() {
 
       if (res.ok) {
         const data = await res.json();
+        if (data.user) {
+          setCurrentUser(data.user);
+        }
         if (data.success && Array.isArray(data.books)) {
           // 關鍵修正：將伺服器書籍與本機 IndexedDB 快取書籍合併，絕不單向覆寫遺失本機書籍
           const localContentBooks = await LocalStore.getAllCachedBooks();
@@ -204,7 +211,7 @@ export function useBookshelf() {
           const mergedBooks = Array.from(mergedMap.values());
           setBooks(mergedBooks);
           setIsOffline(false);
-          checkAllCaches(mergedBooks);
+          checkAllCaches(mergedBooks, data.user?.id);
           LocalStore.setSetting("cached_book_list", mergedBooks);
           flushUnsyncedProgress().catch(console.warn);
 
@@ -237,6 +244,40 @@ export function useBookshelf() {
       setLoading(false);
     }
   }, [checkAllCaches, syncLocalMissingBooksToServer]);
+
+  // 取得使用者驗證狀態
+  const fetchAuthSession = useCallback(async () => {
+    try {
+      const res = await fetch("/api/auth/session");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setCurrentUser(data.user || null);
+          setGoogleConfigured(Boolean(data.googleConfigured));
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to check auth session:", e);
+    }
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch("/api/auth/session", { method: "DELETE" });
+      setCurrentUser(null);
+      await fetchBooks();
+    } catch (e) {
+      console.warn("Logout failed:", e);
+    }
+  }, [fetchBooks]);
+
+  const handleLoginSuccess = useCallback(
+    (user: UserSession) => {
+      setCurrentUser(user);
+      fetchBooks();
+    },
+    [fetchBooks]
+  );
 
   // 初始化主題、偏好設定、網路監聽與接續閱讀檢查
   useEffect(() => {
@@ -289,14 +330,15 @@ export function useBookshelf() {
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
 
-    // 7. 載入書籍
+    // 7. 載入使用者身分與書籍
+    fetchAuthSession();
     fetchBooks();
 
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, [fetchBooks]);
+  }, [fetchAuthSession, fetchBooks]);
 
   const handleSetLayout = (mode: ShelfLayoutMode) => {
     setLayoutMode(mode);
@@ -770,5 +812,11 @@ export function useBookshelf() {
     handleSaveTitle,
     handleSaveDeviceName,
     filteredBooks,
+    currentUser,
+    googleConfigured,
+    showAuthModal,
+    setShowAuthModal,
+    handleLogout,
+    handleLoginSuccess,
   };
 }

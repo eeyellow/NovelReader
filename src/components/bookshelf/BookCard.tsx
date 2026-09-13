@@ -1,20 +1,17 @@
-/**
- * @file BookCard.tsx
- * @description 單一書籍卡片呈現組件，支援精簡列表 (compact) 與詳細卡片 (detailed) 兩種視覺佈局
- */
-
 import React from "react";
 import Link from "next/link";
-import { CheckCircle2, DownloadCloud, Clock, Pencil, Trash2 } from "lucide-react";
+import { CheckCircle2, DownloadCloud, Clock, Pencil, Trash2, User } from "lucide-react";
 import { Book } from "@/lib/db";
 import { ShelfLayoutMode } from "@/types/bookshelf";
 import { formatChars, formatSize, formatDate } from "@/lib/format";
+import { UserSession } from "@/lib/auth";
 
 interface BookCardProps {
   book: Book;
   layoutMode: ShelfLayoutMode;
   isCached: boolean;
   isCaching: boolean;
+  currentUser?: UserSession | null;
   localProgressData?: {
     percentage?: number;
     char_offset?: number;
@@ -31,6 +28,7 @@ export const BookCard: React.FC<BookCardProps> = ({
   layoutMode,
   isCached,
   isCaching,
+  currentUser,
   localProgressData,
   onCache,
   onDelete,
@@ -40,6 +38,12 @@ export const BookCard: React.FC<BookCardProps> = ({
     localProgressData?.percentage !== undefined
       ? localProgressData.percentage
       : book.percentage || 0;
+
+  const canDelete =
+    !book.uploader_id ||
+    book.uploader_id === "default_user" ||
+    currentUser?.role === "admin" ||
+    (currentUser && book.uploader_id === currentUser.id);
 
   const handleLinkClick = () => {
     if (typeof window !== "undefined") {
@@ -54,11 +58,16 @@ export const BookCard: React.FC<BookCardProps> = ({
         onClick={handleLinkClick}
         className="group flex items-center justify-between p-3 sm:px-4.5 rounded-xl border border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--card-bg)] hover:shadow-sm transition-all duration-150 gap-3"
       >
-        {/* Book Title */}
-        <div className="min-w-0 flex-1">
+        {/* Book Title & Uploader */}
+        <div className="min-w-0 flex-1 flex items-center gap-2">
           <h3 className="font-semibold text-sm sm:text-base truncate group-hover:text-[var(--accent-color)] transition-colors">
             {book.title}
           </h3>
+          {book.uploader_name && (
+            <span className="hidden sm:inline-flex items-center text-[10px] text-[var(--text-muted)] bg-[var(--border-color)]/50 px-1.5 py-0.5 rounded shrink-0">
+              <User className="w-2.5 h-2.5 mr-0.5 inline" /> {book.uploader_name}
+            </span>
+          )}
         </div>
 
         {/* Right: Progress & Cache Status Icon */}
@@ -134,11 +143,19 @@ export const BookCard: React.FC<BookCardProps> = ({
           </div>
         </div>
 
-        {/* File Metadata */}
-        <div className="text-xs text-[var(--text-muted)] flex items-center gap-2 mb-4">
+        {/* File Metadata & Uploader */}
+        <div className="text-xs text-[var(--text-muted)] flex flex-wrap items-center gap-2 mb-4">
           <span>{formatChars(book.total_chars)}</span>
           <span>•</span>
           <span>{formatSize(book.file_size)}</span>
+          {book.uploader_name && (
+            <>
+              <span>•</span>
+              <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded bg-[var(--border-color)]/50">
+                <User className="w-2.5 h-2.5 mr-0.5 inline" /> {book.uploader_name}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -147,11 +164,11 @@ export const BookCard: React.FC<BookCardProps> = ({
         <div className="flex items-center justify-between text-xs">
           {percentage >= 99.9 ? (
             <span className="font-bold text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5" /> 已完讀
+              <CheckCircle2 className="w-3.5 h-3.5" /> 我的進度：已完讀
             </span>
           ) : (
             <span className="font-medium text-[var(--accent-color)]">
-              進度 {percentage.toFixed(1)}%
+              我的進度 {percentage.toFixed(1)}%
             </span>
           )}
           <span className="text-[11px] text-[var(--text-muted)] flex items-center gap-1">
@@ -182,14 +199,25 @@ export const BookCard: React.FC<BookCardProps> = ({
             >
               <Pencil className="w-3.5 h-3.5" />
             </button>
-            <button
-              onClick={(e) => onDelete(e, book)}
-              className="p-1 rounded text-[var(--text-muted)] hover:text-red-500 transition-colors opacity-60 hover:opacity-100"
-              title="刪除小說"
-              aria-label="刪除小說"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+            {canDelete ? (
+              <button
+                onClick={(e) => onDelete(e, book)}
+                className="p-1 rounded text-[var(--text-muted)] hover:text-red-500 transition-colors opacity-60 hover:opacity-100"
+                title="刪除小說"
+                aria-label="刪除小說"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <button
+                disabled
+                className="p-1 rounded text-[var(--text-muted)] opacity-20 cursor-not-allowed"
+                title="僅上傳者或管理員可刪除此書籍"
+                aria-label="僅上傳者或管理員可刪除此書籍"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       </div>

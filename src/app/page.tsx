@@ -16,6 +16,7 @@ import { DeviceModal } from "@/components/bookshelf/DeviceModal";
 import { SimplifiedConvertModal } from "@/components/bookshelf/SimplifiedConvertModal";
 import { RenameModal } from "@/components/bookshelf/RenameModal";
 import { StorageModal } from "@/components/bookshelf/StorageModal";
+import { AuthModal } from "@/components/auth/AuthModal";
 
 export default function BookshelfPage() {
   const shelf = useBookshelf();
@@ -47,6 +48,7 @@ export default function BookshelfPage() {
         showThemeMenu={shelf.showThemeMenu}
         themeMenuRef={shelf.themeMenuRef}
         loading={shelf.loading}
+        currentUser={shelf.currentUser}
         onOpenDeviceModal={() => shelf.setShowDeviceModal(true)}
         onToggleThemeMenu={() => shelf.setShowThemeMenu((prev) => !prev)}
         onSelectTheme={(themeId) => {
@@ -58,6 +60,8 @@ export default function BookshelfPage() {
           shelf.setShowStorageModal(true);
         }}
         onRefresh={shelf.fetchBooks}
+        onOpenAuthModal={() => shelf.setShowAuthModal(true)}
+        onLogout={shelf.handleLogout}
       />
 
       {/* 主內容區 */}
@@ -135,6 +139,7 @@ export default function BookshelfPage() {
                   key={book.id}
                   book={book}
                   layoutMode="compact"
+                  currentUser={shelf.currentUser}
                   isCached={!!shelf.cachedStatus[book.id]}
                   isCaching={!!shelf.cachingBookIds[book.id]}
                   localProgressData={shelf.localProgress[book.id]}
@@ -152,6 +157,7 @@ export default function BookshelfPage() {
                   key={book.id}
                   book={book}
                   layoutMode="detailed"
+                  currentUser={shelf.currentUser}
                   isCached={!!shelf.cachedStatus[book.id]}
                   isCaching={!!shelf.cachingBookIds[book.id]}
                   localProgressData={shelf.localProgress[book.id]}
@@ -207,6 +213,15 @@ export default function BookshelfPage() {
         onClose={() => shelf.setShowStorageModal(false)}
         onCacheAll={shelf.handleCacheAllBooks}
         onClearAll={shelf.handleClearAllCaches}
+      />
+
+      {/* 帳號登入 / 切換身分對話框 */}
+      <AuthModal
+        isOpen={shelf.showAuthModal}
+        onClose={() => shelf.setShowAuthModal(false)}
+        currentUser={shelf.currentUser}
+        googleConfigured={shelf.googleConfigured}
+        onLoginSuccess={shelf.handleLoginSuccess}
       />
     </div>
   );
