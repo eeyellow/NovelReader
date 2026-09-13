@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookmarkModel } from "@/lib/db";
+import { getSessionFromRequest } from "@/lib/auth";
 import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +18,9 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const bookmarks = BookmarkModel.getAllByBookId(bookId);
+    const session = getSessionFromRequest(req);
+    const userId = session?.id || searchParams.get("userId") || "default_user";
+    const bookmarks = BookmarkModel.getAllByBookId(bookId, userId);
     return NextResponse.json({ success: true, bookmarks });
   } catch (error: any) {
     return NextResponse.json(
@@ -39,9 +42,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const session = getSessionFromRequest(req);
+    const userId = session?.id || body.user_id || "default_user";
+
     const bookmarkId = body.id || `bm_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
     BookmarkModel.create({
       id: bookmarkId,
+      user_id: userId,
       book_id,
       char_offset: Math.round(char_offset),
       title: title || "書籤",
@@ -52,6 +59,7 @@ export async function POST(req: NextRequest) {
       success: true,
       bookmark: {
         id: bookmarkId,
+        user_id: userId,
         book_id,
         char_offset: Math.round(char_offset),
         title: title || "書籤",
@@ -79,7 +87,9 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    BookmarkModel.delete(id);
+    const session = getSessionFromRequest(req);
+    const userId = session?.role === "admin" ? undefined : session?.id;
+    BookmarkModel.delete(id, userId);
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json(

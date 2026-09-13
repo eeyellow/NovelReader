@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookModel, UPLOADS_DIR } from "@/lib/db";
+import { getSessionFromRequest } from "@/lib/auth";
 import { decodeToUtf8 } from "@/lib/encoding";
 import { convertToTraditional, isSimplifiedChinese } from "@/lib/chinese";
 import fs from "fs";
@@ -9,10 +10,12 @@ import crypto from "crypto";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const books = BookModel.getAll();
-    return NextResponse.json({ success: true, books });
+    const session = getSessionFromRequest(req);
+    const userId = session?.id || "default_user";
+    const books = BookModel.getAll(userId);
+    return NextResponse.json({ success: true, books, user: session || null });
   } catch (error: any) {
     console.error("Failed to fetch books:", error);
     return NextResponse.json(
@@ -89,16 +92,22 @@ export async function POST(req: NextRequest) {
     const chaptersJson = JSON.stringify(parsedChapters);
 
     // Insert to DB
+    const session = getSessionFromRequest(req);
+    const uploaderId = session ? session.id : "default_user";
+    const uploaderName = session ? session.name : "訪客";
+
     BookModel.create({
       id: bookId,
       title: sanitizedTitle,
       file_name: fileName,
       file_size: fileSize,
       total_chars: totalChars,
+      uploader_id: uploaderId,
+      uploader_name: uploaderName,
       chapters_json: chaptersJson,
     });
 
-    const createdBook = BookModel.getById(bookId);
+    const createdBook = BookModel.getById(bookId, uploaderId);
 
     return NextResponse.json({
       success: true,

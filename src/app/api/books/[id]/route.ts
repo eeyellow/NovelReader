@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookModel, UPLOADS_DIR } from "@/lib/db";
+import { getSessionFromRequest } from "@/lib/auth";
 import fs from "fs";
 import path from "path";
 
@@ -7,12 +8,14 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await context.params;
-    const book = BookModel.getById(id);
+    const session = getSessionFromRequest(req);
+    const userId = session?.id || "default_user";
+    const book = BookModel.getById(id, userId);
     if (!book) {
       return NextResponse.json(
         { success: false, error: "Book not found" },
@@ -58,11 +61,34 @@ export async function GET(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await context.params;
+    const session = getSessionFromRequest(req);
+    const book = BookModel.getById(id);
+    if (!book) {
+      return NextResponse.json(
+        { success: false, error: "Book not found" },
+        { status: 404 }
+      );
+    }
+
+    // Check permissions: admin, default_user or the original uploader can delete
+    const isAuthorized =
+      !book.uploader_id ||
+      book.uploader_id === "default_user" ||
+      session?.role === "admin" ||
+      (session?.id && book.uploader_id === session.id);
+
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "您沒有權限刪除其他使用者上傳的書籍" },
+        { status: 403 }
+      );
+    }
+
     BookModel.delete(id);
     return NextResponse.json({ success: true, message: "Book deleted" });
   } catch (error: any) {
@@ -79,6 +105,28 @@ export async function PATCH(
 ) {
   try {
     const { id } = await context.params;
+    const session = getSessionFromRequest(req);
+    const book = BookModel.getById(id);
+    if (!book) {
+      return NextResponse.json(
+        { success: false, error: "找不到該書籍" },
+        { status: 404 }
+      );
+    }
+
+    const isAuthorized =
+      !book.uploader_id ||
+      book.uploader_id === "default_user" ||
+      session?.role === "admin" ||
+      (session?.id && book.uploader_id === session.id);
+
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "您沒有權限修改其他使用者上傳的書籍名稱" },
+        { status: 403 }
+      );
+    }
+
     const body = await req.json();
     const { title } = body;
 
@@ -91,7 +139,7 @@ export async function PATCH(
 
     const trimmedTitle = title.trim();
     BookModel.updateTitle(id, trimmedTitle);
-    const updatedBook = BookModel.getById(id);
+    const updatedBook = BookModel.getById(id, session?.id || "default_user");
 
     if (!updatedBook) {
       return NextResponse.json(
