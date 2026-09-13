@@ -133,8 +133,47 @@ export function getDb(): Database.Database {
       .run();
 
     // Migrations for existing databases
+    // 1. Ensure books table has uploader_id, uploader_name, chapters_json
     try {
-      // 1. Migrate reading_progress to composite key (user_id, book_id) if user_id is missing
+      const bookColumns = dbInstance
+        .prepare("PRAGMA table_info(books)")
+        .all() as Array<{ name: string }>;
+      const bookColNames = new Set(bookColumns.map((c) => c.name));
+      if (!bookColNames.has("uploader_id")) {
+        console.log("[DB Migration] Adding uploader_id to books table...");
+        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_id TEXT DEFAULT 'default_user'");
+      }
+      if (!bookColNames.has("uploader_name")) {
+        console.log("[DB Migration] Adding uploader_name to books table...");
+        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_name TEXT DEFAULT '系統'");
+      }
+      if (!bookColNames.has("chapters_json")) {
+        console.log("[DB Migration] Adding chapters_json to books table...");
+        dbInstance.exec("ALTER TABLE books ADD COLUMN chapters_json TEXT");
+      }
+    } catch (e) {
+      console.warn("[DB Migration] books table migration notice:", e);
+    }
+
+    // 2. Ensure bookmarks table has user_id column
+    try {
+      const bookmarkColumns = dbInstance
+        .prepare("PRAGMA table_info(bookmarks)")
+        .all() as Array<{ name: string }>;
+      const bookmarkColNames = new Set(bookmarkColumns.map((c) => c.name));
+      if (!bookmarkColNames.has("user_id")) {
+        console.log("[DB Migration] Adding user_id to bookmarks table...");
+        dbInstance.exec("ALTER TABLE bookmarks ADD COLUMN user_id TEXT DEFAULT 'default_user'");
+        dbInstance.exec(
+          "CREATE INDEX IF NOT EXISTS idx_bookmarks_user_book ON bookmarks(user_id, book_id)"
+        );
+      }
+    } catch (e) {
+      console.warn("[DB Migration] bookmarks table migration notice:", e);
+    }
+
+    // 3. Migrate reading_progress to composite key (user_id, book_id) safely
+    try {
       const progressColumns = dbInstance
         .prepare("PRAGMA table_info(reading_progress)")
         .all() as Array<{ name: string; pk: number }>;
@@ -143,6 +182,12 @@ export function getDb(): Database.Database {
         console.log(
           "[DB Migration] Upgrading reading_progress table to composite primary key (user_id, book_id)..."
         );
+        const progColNames = new Set(progressColumns.map((c) => c.name));
+        const chIdx = progColNames.has("chapter_index") ? "chapter_index" : "NULL";
+        const pIdx = progColNames.has("page_index") ? "page_index" : "NULL";
+        const pRatio = progColNames.has("page_ratio") ? "page_ratio" : "NULL";
+        const totPages = progColNames.has("total_pages") ? "total_pages" : "NULL";
+
         dbInstance.exec(`
           CREATE TABLE IF NOT EXISTS reading_progress_v2 (
             user_id TEXT NOT NULL DEFAULT 'default_user',
@@ -159,7 +204,7 @@ export function getDb(): Database.Database {
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
           );
           INSERT OR IGNORE INTO reading_progress_v2 (user_id, book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
-          SELECT 'default_user', book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages
+          SELECT 'default_user', book_id, char_offset, percentage, device_name, updated_at, ${chIdx}, ${pIdx}, ${pRatio}, ${totPages}
           FROM reading_progress;
           DROP TABLE reading_progress;
           ALTER TABLE reading_progress_v2 RENAME TO reading_progress;
@@ -183,36 +228,8 @@ export function getDb(): Database.Database {
       if (!progColNames.has("total_pages")) {
         dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN total_pages INTEGER");
       }
-
-      // 2. Ensure bookmarks table has user_id column
-      const bookmarkColumns = dbInstance
-        .prepare("PRAGMA table_info(bookmarks)")
-        .all() as Array<{ name: string }>;
-      const bookmarkColNames = new Set(bookmarkColumns.map((c) => c.name));
-      if (!bookmarkColNames.has("user_id")) {
-        console.log("[DB Migration] Adding user_id to bookmarks table...");
-        dbInstance.exec("ALTER TABLE bookmarks ADD COLUMN user_id TEXT DEFAULT 'default_user'");
-        dbInstance.exec(
-          "CREATE INDEX IF NOT EXISTS idx_bookmarks_user_book ON bookmarks(user_id, book_id)"
-        );
-      }
-
-      // 3. Ensure books table has uploader_id, uploader_name, chapters_json
-      const bookColumns = dbInstance
-        .prepare("PRAGMA table_info(books)")
-        .all() as Array<{ name: string }>;
-      const bookColNames = new Set(bookColumns.map((c) => c.name));
-      if (!bookColNames.has("uploader_id")) {
-        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_id TEXT DEFAULT 'default_user'");
-      }
-      if (!bookColNames.has("uploader_name")) {
-        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_name TEXT DEFAULT '系統'");
-      }
-      if (!bookColNames.has("chapters_json")) {
-        dbInstance.exec("ALTER TABLE books ADD COLUMN chapters_json TEXT");
-      }
     } catch (e) {
-      console.warn("Table migration notice:", e);
+      console.warn("[DB Migration] reading_progress table migration notice:", e);
     }
   }
   return dbInstance;
