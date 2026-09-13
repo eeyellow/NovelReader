@@ -76,18 +76,31 @@ export function getDb(): Database.Database {
 
     // Initialize Schema lazily
     dbInstance.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        avatar TEXT,
+        role TEXT DEFAULT 'user',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS books (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         file_name TEXT NOT NULL,
         file_size INTEGER NOT NULL,
         total_chars INTEGER NOT NULL,
+        uploader_id TEXT DEFAULT 'default_user',
+        uploader_name TEXT DEFAULT '系統',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS reading_progress (
-        book_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL DEFAULT 'default_user',
+        book_id TEXT NOT NULL,
         char_offset INTEGER NOT NULL DEFAULT 0,
         percentage REAL NOT NULL DEFAULT 0.0,
         device_name TEXT,
@@ -96,11 +109,13 @@ export function getDb(): Database.Database {
         page_index INTEGER,
         page_ratio REAL,
         total_pages INTEGER,
+        PRIMARY KEY (user_id, book_id),
         FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS bookmarks (
         id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL DEFAULT 'default_user',
         book_id TEXT NOT NULL,
         char_offset INTEGER NOT NULL,
         title TEXT NOT NULL,
@@ -110,26 +125,89 @@ export function getDb(): Database.Database {
       );
     `);
 
-    // Ensure reading_progress columns exist on existing databases
+    // Ensure default user exists
+    dbInstance
+      .prepare(
+        `INSERT OR IGNORE INTO users (id, email, name, role) VALUES ('default_user', 'admin@local', '預設管理員', 'admin')`
+      )
+      .run();
+
+    // Migrations for existing databases
     try {
-      const columns = dbInstance.prepare("PRAGMA table_info(reading_progress)").all() as Array<{ name: string }>;
-      const colNames = new Set(columns.map((c) => c.name));
-      if (!colNames.has("chapter_index")) {
+      // 1. Migrate reading_progress to composite key (user_id, book_id) if user_id is missing
+      const progressColumns = dbInstance
+        .prepare("PRAGMA table_info(reading_progress)")
+        .all() as Array<{ name: string; pk: number }>;
+      const hasUserIdInProgress = progressColumns.some((c) => c.name === "user_id");
+      if (!hasUserIdInProgress) {
+        console.log(
+          "[DB Migration] Upgrading reading_progress table to composite primary key (user_id, book_id)..."
+        );
+        dbInstance.exec(`
+          CREATE TABLE IF NOT EXISTS reading_progress_v2 (
+            user_id TEXT NOT NULL DEFAULT 'default_user',
+            book_id TEXT NOT NULL,
+            char_offset INTEGER NOT NULL DEFAULT 0,
+            percentage REAL NOT NULL DEFAULT 0.0,
+            device_name TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            chapter_index INTEGER,
+            page_index INTEGER,
+            page_ratio REAL,
+            total_pages INTEGER,
+            PRIMARY KEY (user_id, book_id),
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+          );
+          INSERT OR IGNORE INTO reading_progress_v2 (user_id, book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
+          SELECT 'default_user', book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages
+          FROM reading_progress;
+          DROP TABLE reading_progress;
+          ALTER TABLE reading_progress_v2 RENAME TO reading_progress;
+        `);
+      }
+
+      // Check remaining reading_progress columns if needed
+      const refreshedProgressCols = dbInstance
+        .prepare("PRAGMA table_info(reading_progress)")
+        .all() as Array<{ name: string }>;
+      const progColNames = new Set(refreshedProgressCols.map((c) => c.name));
+      if (!progColNames.has("chapter_index")) {
         dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN chapter_index INTEGER");
       }
-      if (!colNames.has("page_index")) {
+      if (!progColNames.has("page_index")) {
         dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN page_index INTEGER");
       }
-      if (!colNames.has("page_ratio")) {
+      if (!progColNames.has("page_ratio")) {
         dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN page_ratio REAL");
       }
-      if (!colNames.has("total_pages")) {
+      if (!progColNames.has("total_pages")) {
         dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN total_pages INTEGER");
       }
 
-      // Ensure books table has chapters_json column for server-side preprocessed chapters
-      const bookColumns = dbInstance.prepare("PRAGMA table_info(books)").all() as Array<{ name: string }>;
+      // 2. Ensure bookmarks table has user_id column
+      const bookmarkColumns = dbInstance
+        .prepare("PRAGMA table_info(bookmarks)")
+        .all() as Array<{ name: string }>;
+      const bookmarkColNames = new Set(bookmarkColumns.map((c) => c.name));
+      if (!bookmarkColNames.has("user_id")) {
+        console.log("[DB Migration] Adding user_id to bookmarks table...");
+        dbInstance.exec("ALTER TABLE bookmarks ADD COLUMN user_id TEXT DEFAULT 'default_user'");
+        dbInstance.exec(
+          "CREATE INDEX IF NOT EXISTS idx_bookmarks_user_book ON bookmarks(user_id, book_id)"
+        );
+      }
+
+      // 3. Ensure books table has uploader_id, uploader_name, chapters_json
+      const bookColumns = dbInstance
+        .prepare("PRAGMA table_info(books)")
+        .all() as Array<{ name: string }>;
       const bookColNames = new Set(bookColumns.map((c) => c.name));
+      if (!bookColNames.has("uploader_id")) {
+        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_id TEXT DEFAULT 'default_user'");
+      }
+      if (!bookColNames.has("uploader_name")) {
+        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_name TEXT DEFAULT '系統'");
+      }
       if (!bookColNames.has("chapters_json")) {
         dbInstance.exec("ALTER TABLE books ADD COLUMN chapters_json TEXT");
       }
@@ -140,12 +218,24 @@ export function getDb(): Database.Database {
   return dbInstance;
 }
 
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  avatar?: string;
+  role: "admin" | "user";
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Book {
   id: string;
   title: string;
   file_name: string;
   file_size: number;
   total_chars: number;
+  uploader_id?: string;
+  uploader_name?: string;
   created_at: string;
   updated_at: string;
   chapters_json?: string;
@@ -156,6 +246,7 @@ export interface Book {
 }
 
 export interface ReadingProgress {
+  user_id?: string;
   book_id: string;
   char_offset: number;
   percentage: number;
@@ -169,6 +260,7 @@ export interface ReadingProgress {
 
 export interface Bookmark {
   id: string;
+  user_id?: string;
   book_id: string;
   char_offset: number;
   title: string;
@@ -176,25 +268,55 @@ export interface Bookmark {
   created_at: string;
 }
 
-// Database helper functions
-export const BookModel = {
-  getAll(): Book[] {
+// User Model
+export const UserModel = {
+  getById(id: string): User | undefined {
     const db = getDb();
-    const stmt = db.prepare(`
-      SELECT 
-        b.*,
-        p.char_offset,
-        p.percentage,
-        p.device_name as last_device,
-        p.updated_at as progress_updated_at
-      FROM books b
-      LEFT JOIN reading_progress p ON b.id = p.book_id
-      ORDER BY COALESCE(p.updated_at, b.created_at) DESC
-    `);
-    return stmt.all() as Book[];
+    const stmt = db.prepare("SELECT * FROM users WHERE id = ?");
+    return stmt.get(id) as User | undefined;
   },
 
-  getById(id: string): Book | undefined {
+  getByEmail(email: string): User | undefined {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM users WHERE email = ?");
+    return stmt.get(email) as User | undefined;
+  },
+
+  createOrUpdate(user: {
+    id: string;
+    email: string;
+    name: string;
+    avatar?: string;
+    role?: "admin" | "user";
+  }): User {
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO users (id, email, name, avatar, role)
+      VALUES (@id, @email, @name, @avatar, COALESCE(@role, 'user'))
+      ON CONFLICT(id) DO UPDATE SET
+        email = excluded.email,
+        name = excluded.name,
+        avatar = COALESCE(excluded.avatar, users.avatar),
+        updated_at = CURRENT_TIMESTAMP
+    `);
+    stmt.run({
+      ...user,
+      avatar: user.avatar || null,
+      role: user.role || "user",
+    });
+    return this.getById(user.id)!;
+  },
+
+  getAll(): User[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM users ORDER BY created_at ASC");
+    return stmt.all() as User[];
+  },
+};
+
+// Database helper functions for Books
+export const BookModel = {
+  getAll(userId: string = "default_user"): Book[] {
     const db = getDb();
     const stmt = db.prepare(`
       SELECT 
@@ -204,10 +326,26 @@ export const BookModel = {
         p.device_name as last_device,
         p.updated_at as progress_updated_at
       FROM books b
-      LEFT JOIN reading_progress p ON b.id = p.book_id
+      LEFT JOIN reading_progress p ON b.id = p.book_id AND p.user_id = ?
+      ORDER BY COALESCE(p.updated_at, b.created_at) DESC
+    `);
+    return stmt.all(userId) as Book[];
+  },
+
+  getById(id: string, userId: string = "default_user"): Book | undefined {
+    const db = getDb();
+    const stmt = db.prepare(`
+      SELECT 
+        b.*,
+        p.char_offset,
+        p.percentage,
+        p.device_name as last_device,
+        p.updated_at as progress_updated_at
+      FROM books b
+      LEFT JOIN reading_progress p ON b.id = p.book_id AND p.user_id = ?
       WHERE b.id = ?
     `);
-    return stmt.get(id) as Book | undefined;
+    return stmt.get(userId, id) as Book | undefined;
   },
 
   create(book: {
@@ -216,22 +354,28 @@ export const BookModel = {
     file_name: string;
     file_size: number;
     total_chars: number;
+    uploader_id?: string;
+    uploader_name?: string;
     chapters_json?: string;
   }) {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO books (id, title, file_name, file_size, total_chars, chapters_json)
-      VALUES (@id, @title, @file_name, @file_size, @total_chars, @chapters_json)
+      INSERT INTO books (id, title, file_name, file_size, total_chars, uploader_id, uploader_name, chapters_json)
+      VALUES (@id, @title, @file_name, @file_size, @total_chars, @uploader_id, @uploader_name, @chapters_json)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         file_name = excluded.file_name,
         file_size = excluded.file_size,
         total_chars = excluded.total_chars,
+        uploader_id = COALESCE(excluded.uploader_id, books.uploader_id),
+        uploader_name = COALESCE(excluded.uploader_name, books.uploader_name),
         chapters_json = COALESCE(excluded.chapters_json, books.chapters_json),
         updated_at = CURRENT_TIMESTAMP
     `);
     const result = stmt.run({
       ...book,
+      uploader_id: book.uploader_id || "default_user",
+      uploader_name: book.uploader_name || "系統",
       chapters_json: book.chapters_json || null,
     });
     try {
@@ -278,12 +422,12 @@ export const BookModel = {
 };
 
 export const ProgressModel = {
-  get(bookId: string): ReadingProgress | undefined {
+  get(bookId: string, userId: string = "default_user"): ReadingProgress | undefined {
     const db = getDb();
     const stmt = db.prepare(
-      "SELECT * FROM reading_progress WHERE book_id = ?"
+      "SELECT * FROM reading_progress WHERE user_id = ? AND book_id = ?"
     );
-    return stmt.get(bookId) as ReadingProgress | undefined;
+    return stmt.get(userId, bookId) as ReadingProgress | undefined;
   },
 
   upsert(
@@ -297,10 +441,11 @@ export const ProgressModel = {
       page_index?: number;
       page_ratio?: number;
       total_pages?: number;
-    }
+    },
+    userId: string = "default_user"
   ): { updated: boolean; currentProgress: ReadingProgress } {
     const db = getDb();
-    const existing = this.get(bookId);
+    const existing = this.get(bookId, userId);
     const now = clientUpdatedAt || new Date().toISOString();
     const chIdx = extra?.chapter_index ?? null;
     const pIdx = extra?.page_index ?? null;
@@ -320,12 +465,13 @@ export const ProgressModel = {
               page_index = COALESCE(?, page_index),
               page_ratio = COALESCE(?, page_ratio),
               total_pages = COALESCE(?, total_pages)
-          WHERE book_id = ?
+          WHERE user_id = ? AND book_id = ?
         `);
-        stmt.run(charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages, bookId);
+        stmt.run(charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages, userId, bookId);
         return {
           updated: true,
           currentProgress: {
+            user_id: userId,
             book_id: bookId,
             char_offset: charOffset,
             percentage,
@@ -346,13 +492,14 @@ export const ProgressModel = {
       }
     } else {
       const stmt = db.prepare(`
-        INSERT INTO reading_progress (book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO reading_progress (user_id, book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      stmt.run(bookId, charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages);
+      stmt.run(userId, bookId, charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages);
       return {
         updated: true,
         currentProgress: {
+          user_id: userId,
           book_id: bookId,
           char_offset: charOffset,
           percentage,
@@ -369,14 +516,14 @@ export const ProgressModel = {
 };
 
 export const BookmarkModel = {
-  getAllByBookId(bookId: string): Bookmark[] {
+  getAllByBookId(bookId: string, userId: string = "default_user"): Bookmark[] {
     const db = getDb();
     const stmt = db.prepare(`
       SELECT * FROM bookmarks 
-      WHERE book_id = ?
+      WHERE user_id = ? AND book_id = ?
       ORDER BY char_offset ASC, created_at DESC
     `);
-    return stmt.all(bookId) as Bookmark[];
+    return stmt.all(userId, bookId) as Bookmark[];
   },
 
   create(bookmark: {
@@ -385,17 +532,25 @@ export const BookmarkModel = {
     char_offset: number;
     title: string;
     preview_text: string;
+    user_id?: string;
   }) {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT OR REPLACE INTO bookmarks (id, book_id, char_offset, title, preview_text)
-      VALUES (@id, @book_id, @char_offset, @title, @preview_text)
+      INSERT OR REPLACE INTO bookmarks (id, user_id, book_id, char_offset, title, preview_text)
+      VALUES (@id, @user_id, @book_id, @char_offset, @title, @preview_text)
     `);
-    return stmt.run(bookmark);
+    return stmt.run({
+      ...bookmark,
+      user_id: bookmark.user_id || "default_user",
+    });
   },
 
-  delete(id: string) {
+  delete(id: string, userId?: string) {
     const db = getDb();
+    if (userId) {
+      const stmt = db.prepare("DELETE FROM bookmarks WHERE id = ? AND user_id = ?");
+      return stmt.run(id, userId);
+    }
     const stmt = db.prepare("DELETE FROM bookmarks WHERE id = ?");
     return stmt.run(id);
   },
