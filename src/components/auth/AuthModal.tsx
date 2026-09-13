@@ -25,11 +25,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleQuickPreset = (presetName: string, presetEmail: string) => {
-    setName(presetName);
-    setEmail(presetEmail);
-  };
-
   const handleManualLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !email.trim()) {
@@ -124,7 +119,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
           {!googleConfigured && (
             <p className="text-[11px] text-amber-600 dark:text-amber-400 bg-amber-500/10 px-3 py-2 rounded-lg leading-relaxed">
-              提示：環境尚未配置 GOOGLE_CLIENT_ID / SECRET，點擊後若無法授權，可使用下方測試帳號體驗多使用者進度隔離。
+              提示：環境尚未配置 GOOGLE_CLIENT_ID / SECRET，點擊後若無法授權，可使用下方輸入電子信箱登入體驗多使用者隔離。
             </p>
           )}
         </div>
@@ -133,34 +128,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <div className="relative flex items-center justify-center mb-5">
           <div className="border-t border-[var(--border-color)] w-full" />
           <span className="bg-[var(--card-bg)] px-3 text-[11px] text-[var(--text-muted)] shrink-0 font-medium">
-            或快速切換測試身分
+            或使用電子信箱登入
           </span>
           <div className="border-t border-[var(--border-color)] w-full" />
-        </div>
-
-        {/* Quick Presets */}
-        <div className="flex gap-2 mb-4">
-          <button
-            type="button"
-            onClick={() => handleQuickPreset("Alice (讀者A)", "alice@example.com")}
-            className="flex-1 py-1.5 px-2 rounded-lg border border-[var(--border-color)] hover:border-[var(--accent-color)] text-xs text-[var(--text-muted)] hover:text-[var(--text-color)] transition-colors"
-          >
-            讀者 A
-          </button>
-          <button
-            type="button"
-            onClick={() => handleQuickPreset("Bob (讀者B)", "bob@example.com")}
-            className="flex-1 py-1.5 px-2 rounded-lg border border-[var(--border-color)] hover:border-[var(--accent-color)] text-xs text-[var(--text-muted)] hover:text-[var(--text-color)] transition-colors"
-          >
-            讀者 B
-          </button>
-          <button
-            type="button"
-            onClick={() => handleQuickPreset("管理員", "admin@local.dev")}
-            className="flex-1 py-1.5 px-2 rounded-lg border border-[var(--border-color)] hover:border-[var(--accent-color)] text-xs text-[var(--text-muted)] hover:text-[var(--text-color)] transition-colors"
-          >
-            管理員
-          </button>
         </div>
 
         {/* Manual Form */}
