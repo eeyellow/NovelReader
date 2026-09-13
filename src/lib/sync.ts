@@ -136,9 +136,12 @@ export async function flushUnsyncedProgress(): Promise<void> {
   try {
     const unsynced = await LocalStore.getAllUnsyncedProgress();
     for (const item of unsynced) {
+      const realBookId = item.book_id.includes(":")
+        ? item.book_id.split(":")[1]
+        : item.book_id;
       const res = await sendProgressToServer(
         {
-          book_id: item.book_id,
+          book_id: realBookId,
           char_offset: item.char_offset,
           percentage: item.percentage,
           chapter_index: item.chapter_index,

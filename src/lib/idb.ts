@@ -13,9 +13,10 @@ interface NovelReaderDB extends DBSchema {
     };
   };
   local_progress: {
-    key: string; // book_id
+    key: string; // book_id or user_id:book_id
     value: {
       book_id: string;
+      user_id?: string;
       char_offset: number;
       percentage: number;
       chapter_index?: number;
@@ -31,6 +32,7 @@ interface NovelReaderDB extends DBSchema {
     key: string; // id
     value: {
       id: string;
+      user_id?: string;
       book_id: string;
       char_offset: number;
       title: string;
@@ -200,14 +202,18 @@ export const LocalStore = {
       page_index?: number;
       page_ratio?: number;
       total_pages?: number;
-    }
+    },
+    userId: string = "default_user"
   ) {
     const db = await getLocalDB();
     if (!db) return;
-    const existing = await db.get("local_progress", bookId);
+    const progressKey = `${userId}:${bookId}`;
+    const existing =
+      (await db.get("local_progress", progressKey)) ||
+      (await db.get("local_progress", bookId));
     const updatedAt = timestamp || new Date().toISOString();
     const newProgress = {
-      book_id: bookId,
+      book_id: progressKey,
       char_offset: charOffset,
       percentage,
       chapter_index:
@@ -222,21 +228,30 @@ export const LocalStore = {
     await db.put("local_progress", newProgress);
     if (typeof localStorage !== "undefined") {
       try {
+        localStorage.setItem(`novel_reader_prog_${progressKey}`, JSON.stringify(newProgress));
         localStorage.setItem(`novel_reader_prog_${bookId}`, JSON.stringify(newProgress));
       } catch (e) {}
     }
   },
 
-  async getLocalProgress(bookId: string) {
+  async getLocalProgress(bookId: string, userId: string = "default_user") {
     const db = await getLocalDB();
     let record: any = null;
+    const progressKey = `${userId}:${bookId}`;
     if (db) {
-      record = await db.get("local_progress", bookId);
+      record = await db.get("local_progress", progressKey);
+      if (!record) {
+        record = await db.get("local_progress", bookId);
+      }
     }
     if (!record && typeof localStorage !== "undefined") {
       try {
-        const raw = localStorage.getItem(`novel_reader_prog_${bookId}`);
-        if (raw) record = JSON.parse(raw);
+        const rawUser = localStorage.getItem(`novel_reader_prog_${progressKey}`);
+        if (rawUser) record = JSON.parse(rawUser);
+        else {
+          const raw = localStorage.getItem(`novel_reader_prog_${bookId}`);
+          if (raw) record = JSON.parse(raw);
+        }
       } catch (e) {}
     }
     return record;
@@ -249,10 +264,10 @@ export const LocalStore = {
     return all.filter((p) => !p.synced);
   },
 
-  async markProgressSynced(bookId: string) {
+  async markProgressSynced(bookIdOrKey: string) {
     const db = await getLocalDB();
     if (!db) return;
-    const existing = await db.get("local_progress", bookId);
+    const existing = await db.get("local_progress", bookIdOrKey);
     if (existing) {
       existing.synced = true;
       await db.put("local_progress", existing);
@@ -294,21 +309,26 @@ export const LocalStore = {
     char_offset: number;
     title: string;
     preview_text: string;
+    user_id?: string;
     created_at?: string;
   }) {
     const db = await getLocalDB();
     if (!db) return;
     await db.put("bookmarks", {
       ...bookmark,
+      user_id: bookmark.user_id || "default_user",
       created_at: bookmark.created_at || new Date().toISOString(),
     });
   },
 
-  async getBookmarks(bookId: string) {
+  async getBookmarks(bookId: string, userId: string = "default_user") {
     const db = await getLocalDB();
     if (!db) return [];
     const index = db.transaction("bookmarks").store.index("by_book");
-    return await index.getAll(bookId);
+    const all = await index.getAll(bookId);
+    return all.filter(
+      (b: any) => !b.user_id || b.user_id === userId || b.user_id === "default_user"
+    );
   },
 
   async deleteBookmark(id: string) {
