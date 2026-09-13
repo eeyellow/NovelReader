@@ -46,6 +46,53 @@ export function useBookshelf() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
+  const isSyncingMissingRef = useRef(false);
+
+  // 自動檢測並補救同步「本機 IndexedDB 存在但伺服器端 SQLite 缺失」的小說文本
+  const syncLocalMissingBooksToServer = useCallback(
+    async (localBooks: Book[], serverBooks: Book[]) => {
+      if (isSyncingMissingRef.current) return;
+      const serverIds = new Set(serverBooks.map((b) => b.id));
+      const missing = localBooks.filter((b) => b.id && !serverIds.has(b.id));
+
+      if (missing.length === 0) return;
+
+      isSyncingMissingRef.current = true;
+      try {
+        for (const b of missing) {
+          const cached = await LocalStore.getBookContent(b.id);
+          if (!cached || !cached.content || cached.content.length === 0) continue;
+
+          console.log(
+            `[SyncRecovery] 偵測到本機存在但伺服器缺失書籍《${b.title}》(${b.id})，自動補救同步至後端 SQLite...`
+          );
+          const blob = new Blob([cached.content], { type: "text/plain;charset=utf-8" });
+          const file = new File([blob], `${b.title}.txt`, { type: "text/plain" });
+          const formData = new FormData();
+          formData.append("file", file);
+          formData.append("title", b.title);
+          formData.append("id", b.id);
+
+          const res = await fetch("/api/books", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (res.ok) {
+            const resData = await res.json();
+            if (resData.success) {
+              console.log(`[SyncRecovery] 書籍《${b.title}》(${b.id}) 已成功自動補救同步回伺服器 SQLite！`);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[SyncRecovery] 自動補救同步異常:", err);
+      } finally {
+        isSyncingMissingRef.current = false;
+      }
+    },
+    []
+  );
 
   // 點擊主題選單外部自動關閉
   useEffect(() => {
@@ -160,6 +207,9 @@ export function useBookshelf() {
           checkAllCaches(mergedBooks);
           LocalStore.setSetting("cached_book_list", mergedBooks);
           flushUnsyncedProgress().catch(console.warn);
+
+          // 核心修復：若手機本機 IndexedDB 有完整小說，但伺服器端 SQLite 未記錄，主動背景補救同步回後端！
+          syncLocalMissingBooksToServer(localContentBooks, data.books as Book[]).catch(console.warn);
         }
       } else {
         throw new Error("伺服器回應異常");
@@ -186,7 +236,7 @@ export function useBookshelf() {
     } finally {
       setLoading(false);
     }
-  }, [checkAllCaches]);
+  }, [checkAllCaches, syncLocalMissingBooksToServer]);
 
   // 初始化主題、偏好設定、網路監聽與接續閱讀檢查
   useEffect(() => {

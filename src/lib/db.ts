@@ -40,14 +40,38 @@ export function getDb(): Database.Database {
     dbInstance.pragma("foreign_keys = ON");
 
     // Attempt WAL mode, fallback to DELETE mode if on network share / NAS without shared memory
+    const preferredJournalMode = process.env.SQLITE_JOURNAL_MODE || "WAL";
     try {
-      dbInstance.pragma("journal_mode = WAL");
+      dbInstance.pragma(`journal_mode = ${preferredJournalMode}`);
     } catch (e) {
       try {
         dbInstance.pragma("journal_mode = DELETE");
       } catch (err) {
-        console.warn("Could not set journal mode:", err);
+        console.warn("[DB] Could not set journal mode:", err);
       }
+    }
+
+    console.log(`[DB] SQLite initialized at: ${DB_PATH}`);
+    console.log(`[DB] Uploads directory at: ${UPLOADS_DIR}`);
+
+    // Register graceful shutdown to checkpoint WAL and close database safely
+    if (typeof process !== "undefined" && !process.env.__DB_SHUTDOWN_REGISTERED) {
+      process.env.__DB_SHUTDOWN_REGISTERED = "1";
+      const flushAndClose = () => {
+        if (dbInstance) {
+          try {
+            console.log("[DB] Gracefully checkpointing and closing SQLite database...");
+            dbInstance.pragma("wal_checkpoint(TRUNCATE)");
+            dbInstance.close();
+          } catch (err) {
+            console.warn("[DB] Error during SQLite shutdown checkpoint:", err);
+          }
+          dbInstance = null;
+        }
+      };
+      process.once("SIGTERM", flushAndClose);
+      process.once("SIGINT", flushAndClose);
+      process.once("beforeExit", flushAndClose);
     }
 
     // Initialize Schema lazily
@@ -198,11 +222,23 @@ export const BookModel = {
     const stmt = db.prepare(`
       INSERT INTO books (id, title, file_name, file_size, total_chars, chapters_json)
       VALUES (@id, @title, @file_name, @file_size, @total_chars, @chapters_json)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        file_name = excluded.file_name,
+        file_size = excluded.file_size,
+        total_chars = excluded.total_chars,
+        chapters_json = COALESCE(excluded.chapters_json, books.chapters_json),
+        updated_at = CURRENT_TIMESTAMP
     `);
-    return stmt.run({
+    const result = stmt.run({
       ...book,
       chapters_json: book.chapters_json || null,
     });
+    try {
+      db.pragma("wal_checkpoint(PASSIVE)");
+    } catch (e) {}
+    console.log(`[DB] Book persisted: "${book.title}" (${book.id}) to ${DB_PATH}`);
+    return result;
   },
 
   updateChapters(id: string, chaptersJson: string) {
@@ -365,5 +401,5 @@ export const BookmarkModel = {
   },
 };
 
-export { DATA_DIR, UPLOADS_DIR };
+export { DATA_DIR, UPLOADS_DIR, DB_PATH };
 

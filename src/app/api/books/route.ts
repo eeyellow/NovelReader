@@ -66,10 +66,16 @@ export async function POST(req: NextRequest) {
       sanitizedTitle = convertToTraditional(sanitizedTitle);
     }
 
-    // Generate book ID and sanitized filename
-    const bookId = `b_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+    // Generate book ID (or use provided safe ID for sync recovery) and sanitized filename
+    const idOverride = formData.get("id") as string | null;
+    let bookId = `b_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+    if (idOverride && /^[a-zA-Z0-9_-]+$/.test(idOverride)) {
+      bookId = idOverride;
+    }
     const fileName = `${bookId}.txt`;
     const targetFilePath = path.join(UPLOADS_DIR, fileName);
+
+    console.log(`[API /api/books] Saving book: "${sanitizedTitle}" (${bookId}) -> ${targetFilePath}`);
 
     // Save as standard UTF-8 file
     fs.writeFileSync(targetFilePath, text, "utf-8");
