@@ -7,12 +7,9 @@ function resolveDataDir(): string {
   if (process.env.DATA_DIR) {
     return process.env.DATA_DIR;
   }
-  // If running inside .next/standalone, prioritize the root project data directory if present
+  // If running inside .next/standalone, always point to the external root project data directory
   if (process.cwd().includes(".next")) {
-    const parentRootData = path.resolve(process.cwd(), "../../data");
-    if (fs.existsSync(parentRootData)) {
-      return parentRootData;
-    }
+    return path.resolve(process.cwd(), "../../data");
   }
   return path.join(process.cwd(), "data");
 }
