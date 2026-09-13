@@ -66,6 +66,7 @@ export function useReaderPagination({
   const pendingTargetOffset = useRef<number | null>(null);
   const pendingTargetPageRatio = useRef<number | null>(null);
   const pendingTargetPageIndex = useRef<number | null>(null);
+  const pendingTargetTotalPages = useRef<number | null>(null);
   const isRestoringProgress = useRef<boolean>(true);
   const currentPageRef = useRef(currentPage);
   currentPageRef.current = currentPage;
@@ -74,6 +75,10 @@ export function useReaderPagination({
   const lastDimensionsRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
   const currentChapterRef = useRef(currentChapter);
   currentChapterRef.current = currentChapter;
+  const currentChapterIdxRef = useRef(currentChapterIdx);
+  currentChapterIdxRef.current = currentChapterIdx;
+  const currentOffsetRef = useRef(currentOffset);
+  currentOffsetRef.current = currentOffset;
 
   // 章節切換 Toast 提示
   const notifyChapterSwitch = useCallback(
@@ -95,13 +100,44 @@ export function useReaderPagination({
     if (vWidth <= 0) return;
     setViewportWidth(vWidth);
 
+    // 強制將當前視窗寬度同步至 contentRef DOM 樣式，避免 React 狀態更新延遲導致第一次計算 columnWidth 為 auto
+    contentRef.current.style.width = `${vWidth}px`;
+    contentRef.current.style.columnWidth = `${vWidth}px`;
+    contentRef.current.style.columnGap = `${columnGap}px`;
+    contentRef.current.style.columnFill = "auto";
+
     // 由 CSS columns 計算的整體內容滾動寬度
     const scrollW = contentRef.current.scrollWidth;
     const totalCols = Math.max(1, Math.round((scrollW + columnGap) / (vWidth + columnGap)));
     setTotalPages(totalCols);
 
+    // 處理連續滾動容器的滾動位置重置與定位
+    if (scrollContainerRef.current) {
+      if (pendingPageRef.current === "last") {
+        scrollContainerRef.current.scrollTop =
+          scrollContainerRef.current.scrollHeight - scrollContainerRef.current.clientHeight;
+      } else if (pendingPageRef.current === "first") {
+        scrollContainerRef.current.scrollTop = 0;
+      } else if (pendingTargetOffset.current !== null && currentChapter) {
+        const relOffset = Math.max(0, pendingTargetOffset.current - currentChapter.charOffset);
+        const chLen = currentChapter.length || 1;
+        const ratio = Math.min(1, Math.max(0, relOffset / chLen));
+        scrollContainerRef.current.scrollTop = Math.round(
+          ratio * (scrollContainerRef.current.scrollHeight - scrollContainerRef.current.clientHeight)
+        );
+      }
+    }
+
+    // 判斷章節是否具有多頁內容特徵
+    const chapterHasMultiplePagesLikely =
+      (currentChapter?.length || 0) > 350 || processedParagraphs.length > 2;
+
     // 處理目標翻頁定位指示
     if (pendingPageRef.current === "last") {
+      if (totalCols <= 1 && chapterHasMultiplePagesLikely) {
+        requestAnimationFrame(() => measurePagination());
+        return;
+      }
       setCurrentPage(totalCols - 1);
       pendingPageRef.current = null;
       isRestoringProgress.current = false;
@@ -114,38 +150,88 @@ export function useReaderPagination({
       pendingTargetPageIndex.current !== null ||
       pendingTargetOffset.current !== null
     ) {
+      const isTargetNonZero =
+        (pendingTargetPageIndex.current !== null && pendingTargetPageIndex.current > 0) ||
+        (pendingTargetPageRatio.current !== null && pendingTargetPageRatio.current > 0.05) ||
+        (pendingTargetOffset.current !== null &&
+          currentChapter &&
+          pendingTargetOffset.current > currentChapter.charOffset + 300);
+
+      // 若有非首頁的目標指示，但多欄排版尚未生效（總欄數仍為 1），保留目標並排入下一幀重新測量
+      if (totalCols <= 1 && chapterHasMultiplePagesLikely && isTargetNonZero) {
+        requestAnimationFrame(() => {
+          measurePagination();
+        });
+        return;
+      }
+
       let targetP = 0;
-      if (pendingTargetPageIndex.current !== null && pendingTargetPageIndex.current >= 0) {
+      const relOffset =
+        pendingTargetOffset.current !== null && currentChapter
+          ? Math.max(0, pendingTargetOffset.current - currentChapter.charOffset)
+          : 0;
+      const chLen = currentChapter?.length || 1;
+
+      // 若 pendingTargetPageIndex > 0，優先還原精確頁碼
+      if (
+        pendingTargetPageIndex.current !== null &&
+        pendingTargetPageIndex.current > 0
+      ) {
+        if (
+          pendingTargetTotalPages.current &&
+          pendingTargetTotalPages.current > 0 &&
+          pendingTargetTotalPages.current !== totalCols
+        ) {
+          // 版面尺寸已變更（例如旋轉螢幕或縮放視窗），依原總頁數比例對應新總頁數
+          const ratio = pendingTargetPageIndex.current / pendingTargetTotalPages.current;
+          targetP = Math.min(totalCols - 1, Math.max(0, Math.floor(ratio * totalCols)));
+        } else {
+          targetP = Math.min(totalCols - 1, Math.max(0, pendingTargetPageIndex.current));
+        }
+      } else if (pendingTargetOffset.current !== null && currentChapter && relOffset > 300) {
+        // 若 pendingTargetPageIndex 為 0（可能曾被舊版本誤設為 0），但 offset 明顯已深入本章，以字元偏移量比例計算真實頁碼
+        const ratio = Math.min(1, Math.max(0, relOffset / chLen));
+        targetP = Math.min(totalCols - 1, Math.max(0, Math.floor(ratio * totalCols + 1e-4)));
+      } else if (pendingTargetPageIndex.current !== null && pendingTargetPageIndex.current >= 0) {
         targetP = Math.min(totalCols - 1, Math.max(0, pendingTargetPageIndex.current));
       } else if (pendingTargetPageRatio.current !== null && pendingTargetPageRatio.current >= 0) {
         targetP = Math.min(
           totalCols - 1,
-          Math.max(0, Math.round(pendingTargetPageRatio.current * (totalCols - 1)))
+          Math.max(0, Math.floor(pendingTargetPageRatio.current * totalCols))
         );
       } else if (pendingTargetOffset.current !== null && currentChapter) {
-        const relOffset = Math.max(0, pendingTargetOffset.current - currentChapter.charOffset);
-        const chLen = currentChapter.length || 1;
         const ratio = Math.min(1, Math.max(0, relOffset / chLen));
         targetP = Math.min(totalCols - 1, Math.max(0, Math.floor(ratio * totalCols + 1e-4)));
       }
 
       setCurrentPage(targetP);
+      if (vWidth > 0 && contentRef.current) {
+        contentRef.current.style.transition = "none";
+        contentRef.current.style.transform = `translateX(-${targetP * (vWidth + columnGap)}px)`;
+        void contentRef.current.offsetWidth;
+      }
+
       pendingTargetPageRatio.current = null;
       pendingTargetPageIndex.current = null;
       pendingTargetOffset.current = null;
+      pendingTargetTotalPages.current = null;
       setTimeout(() => {
+        if (contentRef.current) {
+          contentRef.current.style.transition = "";
+        }
         isRestoringProgress.current = false;
-      }, 200);
+      }, 300);
     } else {
       setCurrentPage((prev) => Math.min(prev, totalCols - 1));
     }
-  }, [currentChapter, columnGap]);
+  }, [currentChapter, columnGap, processedParagraphs.length]);
 
   // 排版或章節變更後重新計算分頁
   useLayoutEffect(() => {
+    measurePagination();
     const timer = setTimeout(() => {
       measurePagination();
-    }, 50);
+    }, 60);
     return () => clearTimeout(timer);
   }, [
     currentChapterIdx,
@@ -178,7 +264,7 @@ export function useReaderPagination({
       if (currentChapterRef.current && totalPagesRef.current > 1 && !isRestoringProgress.current) {
         const curP = currentPageRef.current;
         const totP = totalPagesRef.current;
-        pendingTargetPageRatio.current = curP / (totP - 1);
+        pendingTargetPageRatio.current = curP / totP;
       }
       measurePagination();
     });
@@ -219,9 +305,22 @@ export function useReaderPagination({
     if (!bookId) return;
 
     const handleSyncOnClose = () => {
-      if (totalChars > 0) {
-        const percentage = Number(((currentOffset / totalChars) * 100).toFixed(2));
-        syncProgress(bookId, currentOffset, percentage, true);
+      // 正在復原進度時不覆蓋已有進度
+      if (isRestoringProgress.current) return;
+
+      if (totalChars > 0 && currentChapterRef.current) {
+        const curOffset = currentOffsetRef.current;
+        const curPage = currentPageRef.current;
+        const totPages = totalPagesRef.current;
+        const curChIdx = currentChapterIdxRef.current;
+        const pageRatio = totPages > 0 ? curPage / totPages : 0;
+        const percentage = Number(((curOffset / totalChars) * 100).toFixed(2));
+        syncProgress(bookId, curOffset, percentage, true, {
+          chapter_index: curChIdx,
+          page_index: curPage,
+          page_ratio: pageRatio,
+          total_pages: totPages,
+        });
       }
     };
 
@@ -234,7 +333,7 @@ export function useReaderPagination({
       window.removeEventListener("pagehide", handleSyncOnClose);
       window.removeEventListener("beforeunload", handleSyncOnClose);
     };
-  }, [bookId, currentOffset, totalChars]);
+  }, [bookId, totalChars]);
 
   // 翻頁導航方法
   const goToNextPage = useCallback(() => {
@@ -402,6 +501,7 @@ export function useReaderPagination({
     pendingTargetOffset,
     pendingTargetPageRatio,
     pendingTargetPageIndex,
+    pendingTargetTotalPages,
     isRestoringProgress,
     measurePagination,
     goToNextPage,

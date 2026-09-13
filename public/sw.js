@@ -3,7 +3,7 @@
  * @description PWA 離線 Service Worker，支援雙層快取、弱網超時回退、Reader App Shell 與 100% 離線冷啟動
  */
 
-const CACHE_VERSION = "novel-reader-659653c-mtyjw4wt";
+const CACHE_VERSION = "novel-reader-c62fa13-mtzk5k9y";
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const READER_SHELL_KEY = "/__reader_shell__";
@@ -93,13 +93,14 @@ self.addEventListener("fetch", (event) => {
           const networkResponse = await fetchWithTimeout(request, 2500);
           if (networkResponse && networkResponse.status === 200 && networkResponse.type === "basic") {
             const clone = networkResponse.clone();
-            caches.open(RUNTIME_CACHE).then((cache) => {
-              cache.put(request, clone);
+            const shellClone = url.pathname.startsWith("/reader/") ? networkResponse.clone() : null;
+            caches.open(RUNTIME_CACHE).then(async (cache) => {
+              await cache.put(request, clone);
               // 若造訪的是閱讀器頁面，額外備份一份通用 Reader Shell 供其他書籍離線冷啟動
-              if (url.pathname.startsWith("/reader/")) {
-                cache.put(READER_SHELL_KEY, networkResponse.clone());
+              if (shellClone) {
+                await cache.put(READER_SHELL_KEY, shellClone);
               }
-            });
+            }).catch((err) => console.warn("Cache put failed:", err));
           }
           return networkResponse;
         } catch {

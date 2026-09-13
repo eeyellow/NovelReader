@@ -47,6 +47,8 @@ export function useReaderSettings(onActivity?: () => void) {
       (localStorage.getItem("novel_reader_text_align") as TextAlignMode) || "justify";
     const savedPadding =
       (localStorage.getItem("novel_reader_padding_mode") as PaddingMode) || "normal";
+    const savedChineseVariant =
+      (localStorage.getItem("novel_reader_chinese_variant") as ChineseVariant) || "original";
 
     setTheme(savedTheme);
     setFontSize(savedFontSize);
@@ -57,6 +59,7 @@ export function useReaderSettings(onActivity?: () => void) {
     setReadMode(savedReadMode);
     setTextAlign(savedTextAlign);
     setPaddingMode(savedPadding);
+    setChineseVariant(savedChineseVariant);
     document.documentElement.setAttribute("data-theme", savedTheme);
   }, []);
 
@@ -127,6 +130,7 @@ export function useReaderSettings(onActivity?: () => void) {
   const updateChineseVariant = useCallback(
     (val: ChineseVariant) => {
       setChineseVariant(val);
+      localStorage.setItem("novel_reader_chinese_variant", val);
       onActivity?.();
     },
     [onActivity]

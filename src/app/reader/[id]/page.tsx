@@ -20,6 +20,7 @@ import { useReaderSettings } from "@/hooks/useReaderSettings";
 import { useReaderBookmarks } from "@/hooks/useReaderBookmarks";
 import { useReaderSearch } from "@/hooks/useReaderSearch";
 import { useReaderPagination } from "@/hooks/useReaderPagination";
+import { parseSafeTime } from "@/lib/format";
 import { GestureOverlay } from "@/components/gesture/GestureOverlay";
 import { GestureSettingsModal } from "@/components/gesture/GestureSettingsModal";
 import { ReaderHeader } from "@/components/reader/ReaderHeader";
@@ -266,6 +267,7 @@ export default function ReaderPage() {
       let targetChapterIdx = 0;
       let targetPageRatio: number | null = null;
       let targetPageIndex: number | null = null;
+      let targetTotalPages: number | null = null;
 
       const localProg = await LocalStore.getLocalProgress(bookId);
       if (localProg) {
@@ -281,11 +283,15 @@ export default function ReaderPage() {
         if (typeof localProg.page_index === "number") {
           targetPageIndex = localProg.page_index;
         }
+        if (typeof localProg.total_pages === "number") {
+          targetTotalPages = localProg.total_pages;
+        }
       }
 
       pagination.pendingTargetPageIndex.current = targetPageIndex;
       pagination.pendingTargetPageRatio.current = targetPageRatio;
       pagination.pendingTargetOffset.current = targetOffset;
+      pagination.pendingTargetTotalPages.current = targetTotalPages;
       pagination.isRestoringProgress.current = true;
 
       setCurrentChapterIdx(targetChapterIdx);
@@ -304,8 +310,8 @@ export default function ReaderPage() {
           const progData = await progRes.json();
           if (progData.success && progData.progress) {
             const sProg = progData.progress;
-            const sTime = new Date(sProg.updated_at).getTime();
-            const lTime = localProg ? new Date(localProg.updated_at).getTime() : 0;
+            const sTime = parseSafeTime(sProg.updated_at);
+            const lTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
 
             if (sTime > lTime + 3000 && Math.abs(sProg.char_offset - targetOffset) > 300) {
               pagination.setConflictPrompt({
@@ -354,6 +360,46 @@ export default function ReaderPage() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (showTOC || showSettings || showGestureModal || searchHook.showSearchModal) return;
 
+      if (settings.readMode === "continuous") {
+        const scrollEl = pagination.scrollContainerRef.current;
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          scrollEl?.scrollBy({ top: 80, behavior: "smooth" });
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          scrollEl?.scrollBy({ top: -80, behavior: "smooth" });
+        } else if (e.key === "PageDown" || e.key === " ") {
+          e.preventDefault();
+          if (scrollEl) {
+            const isNearBottom =
+              scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 30;
+            if (isNearBottom) {
+              pagination.goToNextChapter();
+            } else {
+              scrollEl.scrollBy({ top: scrollEl.clientHeight * 0.8, behavior: "smooth" });
+            }
+          }
+        } else if (e.key === "PageUp") {
+          e.preventDefault();
+          if (scrollEl) {
+            if (scrollEl.scrollTop <= 10) {
+              pagination.goToPrevChapter();
+            } else {
+              scrollEl.scrollBy({ top: -scrollEl.clientHeight * 0.8, behavior: "smooth" });
+            }
+          }
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          pagination.goToNextChapter();
+        } else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          pagination.goToPrevChapter();
+        } else if (e.key === "f" || e.key === "F") {
+          toggleFullscreen();
+        }
+        return;
+      }
+
       if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
         e.preventDefault();
         pagination.goToNextPage();
@@ -375,6 +421,7 @@ export default function ReaderPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     pagination,
+    settings.readMode,
     toggleFullscreen,
     showTOC,
     showSettings,

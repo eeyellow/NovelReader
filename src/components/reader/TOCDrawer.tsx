@@ -7,6 +7,7 @@ import React, { useState, useEffect } from "react";
 import { X, Bookmark, Trash2 } from "lucide-react";
 import { Chapter } from "@/lib/parser";
 import { Bookmark as BookmarkType } from "@/lib/db";
+import { formatDate } from "@/lib/format";
 
 interface TOCDrawerProps {
   isOpen: boolean;
@@ -158,7 +159,7 @@ export const TOCDrawer: React.FC<TOCDrawerProps> = ({
                   {bm.preview_text}
                 </p>
                 <p className="text-[10px] text-[var(--text-muted)]/70">
-                  {new Date(bm.created_at).toLocaleDateString()}
+                  {formatDate(bm.created_at)}
                 </p>
               </div>
             ))

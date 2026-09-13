@@ -34,7 +34,7 @@ export function useReaderBookmarks({
   const [bookmarks, setBookmarks] = useState<BookmarkType[]>([]);
   const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
 
-  // 載入書籤（離線優先 + 背景非同步同步）
+  // 載入書籤（離線優先 + 背景非同步同步 + 雙向合併）
   const loadBookmarks = useCallback(async (targetBookId: string) => {
     try {
       const localBMs = await LocalStore.getBookmarks(targetBookId);
@@ -45,10 +45,31 @@ export function useReaderBookmarks({
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.bookmarks)) {
-          setBookmarks(data.bookmarks);
-          for (const bm of data.bookmarks) {
+          const mergedMap = new Map<string, BookmarkType>();
+          for (const bm of localBMs || []) {
+            mergedMap.set(bm.id, bm);
+          }
+          for (const bm of data.bookmarks as BookmarkType[]) {
+            mergedMap.set(bm.id, { ...mergedMap.get(bm.id), ...bm });
             await LocalStore.saveBookmark(bm);
           }
+
+          // 背景上傳本機新增但伺服器尚未收錄的離線書籤
+          const serverIdSet = new Set(data.bookmarks.map((b: BookmarkType) => b.id));
+          for (const bm of localBMs || []) {
+            if (!serverIdSet.has(bm.id)) {
+              fetch("/api/bookmarks", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(bm),
+              }).catch(console.warn);
+            }
+          }
+
+          const merged = Array.from(mergedMap.values()).sort(
+            (a, b) => a.char_offset - b.char_offset
+          );
+          setBookmarks(merged);
         }
       }
     } catch (e) {

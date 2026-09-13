@@ -17,10 +17,28 @@ export function formatChars(chars: number): string {
   return `${(chars / 10000).toFixed(1)} 萬字`;
 }
 
+/** 安全解析時間字串，支援 SQLite "YYYY-MM-DD HH:mm:ss" 與 ISO 8601，防止 Safari/WebKit 出現 Invalid Date 或 NaN */
+export function parseSafeDate(dateStr?: string): Date | null {
+  if (!dateStr) return null;
+  const iso =
+    dateStr.includes(" ") && !dateStr.includes("T")
+      ? dateStr.replace(" ", "T") + "Z"
+      : dateStr;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** 安全解析時間字串為毫秒 Timestamp，若解析失敗回傳 0 */
+export function parseSafeTime(dateStr?: string): number {
+  const d = parseSafeDate(dateStr);
+  return d ? d.getTime() : 0;
+}
+
 /** 格式化相對時間或日期字串 */
 export function formatDate(dateStr?: string): string {
   if (!dateStr) return "尚未閱讀";
-  const date = new Date(dateStr);
+  const date = parseSafeDate(dateStr);
+  if (!date) return "尚未閱讀";
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
@@ -33,3 +51,4 @@ export function formatDate(dateStr?: string): string {
   if (diffDays < 7) return `${diffDays} 天前`;
   return date.toLocaleDateString();
 }
+

@@ -31,10 +31,20 @@ function htmlToPlainText(html: string): string {
     .replace(/&#39;/gi, "'")
     .replace(/&mdash;/gi, "—")
     .replace(/&hellip;/gi, "…")
-    .replace(/&#([0-9]{1,7});/gi, (_, num) => String.fromCharCode(parseInt(num, 10)))
-    .replace(/&#x([0-9a-fA-F]{1,6});/gi, (_, hex) =>
-      String.fromCharCode(parseInt(hex, 16))
-    );
+    .replace(/&#([0-9]{1,7});/gi, (_, num) => {
+      try {
+        return String.fromCodePoint(parseInt(num, 10));
+      } catch {
+        return "";
+      }
+    })
+    .replace(/&#x([0-9a-fA-F]{1,6});/gi, (_, hex) => {
+      try {
+        return String.fromCodePoint(parseInt(hex, 16));
+      } catch {
+        return "";
+      }
+    });
 
   // Normalize multi-newlines
   const lines = clean

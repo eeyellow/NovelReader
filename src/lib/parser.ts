@@ -82,17 +82,21 @@ export function extractChapters(text: string): Chapter[] {
         break;
       }
 
-      // 在 MAX_CHUNK_LENGTH 附近尋找最近的段落換行符號 (\n)
+      // 在 MAX_CHUNK_LENGTH 附近尋找最近的段落換行符號 (\n)，嚴格限制於本章節範圍內，防止越界截取下一章內容
       const targetSplitPoint = currentStart + MAX_CHUNK_LENGTH;
-      const searchWindow = text.slice(targetSplitPoint - 500, targetSplitPoint + 500);
+      const searchStart = Math.max(currentStart, targetSplitPoint - 500);
+      const searchEnd = Math.min(chapterEnd, targetSplitPoint + 500);
+      const searchWindow = text.slice(searchStart, searchEnd);
       const newlineIdx = searchWindow.lastIndexOf("\n");
 
       let splitOffset = targetSplitPoint;
       if (newlineIdx !== -1) {
-        splitOffset = targetSplitPoint - 500 + newlineIdx + 1;
+        splitOffset = searchStart + newlineIdx + 1;
       }
+      splitOffset = Math.min(chapterEnd, Math.max(currentStart + 1000, splitOffset));
 
       const chunkLength = splitOffset - currentStart;
+      if (chunkLength <= 0) break;
       chunkedChapters.push({
         index: 0,
         title: partNum === 1 ? `${chapter.title} (1)` : `${chapter.title} (${partNum})`,

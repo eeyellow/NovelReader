@@ -146,12 +146,24 @@ export const LocalStore = {
     return count > 0;
   },
 
+  async clearBookContentOnly(bookId: string) {
+    const db = await getLocalDB();
+    if (!db) return;
+    await db.delete("books_content", bookId);
+    await db.delete("chapters_cache", bookId);
+  },
+
   async deleteBookContent(bookId: string) {
     const db = await getLocalDB();
     if (!db) return;
     await db.delete("books_content", bookId);
     await db.delete("local_progress", bookId);
     await db.delete("chapters_cache", bookId);
+    if (typeof localStorage !== "undefined") {
+      try {
+        localStorage.removeItem(`novel_reader_prog_${bookId}`);
+      } catch (e) {}
+    }
     try {
       const tx = db.transaction("bookmarks", "readwrite");
       const index = tx.store.index("by_book");
@@ -192,25 +204,42 @@ export const LocalStore = {
   ) {
     const db = await getLocalDB();
     if (!db) return;
+    const existing = await db.get("local_progress", bookId);
     const updatedAt = timestamp || new Date().toISOString();
-    await db.put("local_progress", {
+    const newProgress = {
       book_id: bookId,
       char_offset: charOffset,
       percentage,
-      chapter_index: extra?.chapter_index,
-      page_index: extra?.page_index,
-      page_ratio: extra?.page_ratio,
-      total_pages: extra?.total_pages,
+      chapter_index:
+        extra?.chapter_index !== undefined ? extra.chapter_index : existing?.chapter_index,
+      page_index: extra?.page_index !== undefined ? extra.page_index : existing?.page_index,
+      page_ratio: extra?.page_ratio !== undefined ? extra.page_ratio : existing?.page_ratio,
+      total_pages: extra?.total_pages !== undefined ? extra.total_pages : existing?.total_pages,
       device_name: deviceName,
       updated_at: updatedAt,
       synced,
-    });
+    };
+    await db.put("local_progress", newProgress);
+    if (typeof localStorage !== "undefined") {
+      try {
+        localStorage.setItem(`novel_reader_prog_${bookId}`, JSON.stringify(newProgress));
+      } catch (e) {}
+    }
   },
 
   async getLocalProgress(bookId: string) {
     const db = await getLocalDB();
-    if (!db) return null;
-    return await db.get("local_progress", bookId);
+    let record: any = null;
+    if (db) {
+      record = await db.get("local_progress", bookId);
+    }
+    if (!record && typeof localStorage !== "undefined") {
+      try {
+        const raw = localStorage.getItem(`novel_reader_prog_${bookId}`);
+        if (raw) record = JSON.parse(raw);
+      } catch (e) {}
+    }
+    return record;
   },
 
   async getAllUnsyncedProgress() {

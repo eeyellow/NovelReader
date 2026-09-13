@@ -10,6 +10,7 @@ import { getDeviceName, setCustomDeviceName } from "@/lib/device";
 import { decodeToUtf8 } from "@/lib/encoding";
 import { isSimplifiedChinese, convertToTraditional, convertToSimplified } from "@/lib/chinese";
 import { flushUnsyncedProgress } from "@/lib/sync";
+import { parseSafeTime } from "@/lib/format";
 import { SortField, SortOrder, ShelfLayoutMode, EditingBookState, CacheAllProgress } from "@/types/bookshelf";
 
 export function useBookshelf() {
@@ -330,7 +331,7 @@ export function useBookshelf() {
       return;
     }
     for (const book of books) {
-      await LocalStore.deleteBookContent(book.id);
+      await LocalStore.clearBookContentOnly(book.id);
     }
     const newStatus: Record<string, boolean> = {};
     books.forEach((b) => {
@@ -538,7 +539,11 @@ export function useBookshelf() {
     }
 
     try {
-      await fetch(`/api/books/${book.id}`, { method: "DELETE" });
+      try {
+        await fetch(`/api/books/${book.id}`, { method: "DELETE" });
+      } catch (netErr) {
+        console.warn("無法連接伺服器刪除雲端檔案，仍繼續清除本機資料", netErr);
+      }
       await LocalStore.deleteBookContent(book.id);
       setBooks((prev) => {
         const next = prev.filter((b) => b.id !== book.id);
@@ -627,14 +632,6 @@ export function useBookshelf() {
       return lowerTitle.includes(rawQ) || lowerTitle.includes(tradQ) || lowerTitle.includes(simpQ);
     });
 
-    // 安全解析時間字串，支援 SQLite "YYYY-MM-DD HH:mm:ss" 與 ISO 8601，避免 WebKit/Safari 出現 NaN 排序錯亂
-    const parseTime = (val?: string) => {
-      if (!val) return 0;
-      const iso = val.includes(" ") && !val.includes("T") ? val.replace(" ", "T") + "Z" : val;
-      const t = new Date(iso).getTime();
-      return isNaN(t) ? 0 : t;
-    };
-
     return list.sort((a, b) => {
       let cmp = 0;
       if (sortBy === "title") {
@@ -649,14 +646,14 @@ export function useBookshelf() {
         cmp = aChars - bChars;
       } else {
         const aTime = Math.max(
-          parseTime(localProgress[a.id]?.updated_at),
-          parseTime(a.progress_updated_at),
-          parseTime(a.created_at)
+          parseSafeTime(localProgress[a.id]?.updated_at),
+          parseSafeTime(a.progress_updated_at),
+          parseSafeTime(a.created_at)
         );
         const bTime = Math.max(
-          parseTime(localProgress[b.id]?.updated_at),
-          parseTime(b.progress_updated_at),
-          parseTime(b.created_at)
+          parseSafeTime(localProgress[b.id]?.updated_at),
+          parseSafeTime(b.progress_updated_at),
+          parseSafeTime(b.created_at)
         );
         cmp = aTime - bTime;
       }
