@@ -2,9 +2,7 @@
 const nextConfig = {
   output: "standalone",
   serverExternalPackages: ["better-sqlite3"],
-  outputFileTracingExcludes: {
-    "*": ["data/**/*"],
-  },
+
   eslint: {
     ignoreDuringBuilds: true,
   },
