@@ -139,10 +139,15 @@ export const BookshelfHeader: React.FC<BookshelfHeaderProps> = ({
                 <div className="px-3 py-2 border-b border-[var(--border-color)] mb-1">
                   <p className="font-bold truncate text-[var(--text-color)]">{currentUser.name}</p>
                   <p className="text-[11px] text-[var(--text-muted)] truncate">{currentUser.email}</p>
-                  <div className="mt-1">
+                  <div className="mt-1 flex items-center gap-1.5">
                     <span className="inline-block px-1.5 py-0.5 rounded bg-[var(--accent-color)]/10 text-[var(--accent-color)] text-[10px] font-medium">
                       {currentUser.role === "admin" ? "管理員" : "共用書庫讀者"}
                     </span>
+                    {currentUser.id.startsWith("cf_") && (
+                      <span className="inline-block px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-600 dark:text-orange-400 text-[10px] font-medium">
+                        Cloudflare 驗證
+                      </span>
+                    )}
                   </div>
                 </div>
                 <button

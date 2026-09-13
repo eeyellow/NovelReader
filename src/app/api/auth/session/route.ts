@@ -14,13 +14,21 @@ export async function GET(req: NextRequest) {
   try {
     const session = getSessionFromRequest(req);
     const { isConfigured, clientId } = getGoogleConfig();
+    const isCloudflare = Boolean(req.headers.get("cf-access-authenticated-user-email"));
 
-    return NextResponse.json({
+    const res = NextResponse.json({
       success: true,
       user: session,
       googleConfigured: isConfigured,
       googleClientId: clientId,
+      isCloudflare,
     });
+
+    if (session && isCloudflare && !req.cookies.get("nr_session")) {
+      setSessionCookie(res, session);
+    }
+
+    return res;
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: error.message || "Failed to fetch session" },

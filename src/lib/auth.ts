@@ -76,6 +76,31 @@ export function verifySession(token: string): UserSession | null {
 
 // Extract current session from NextRequest or standard Request headers
 export function getSessionFromRequest(req: NextRequest | Request): UserSession | null {
+  // 1. Cloudflare Access Zero Trust 自動單點登入 (免二度手動登入)
+  const cfEmail = req.headers.get("cf-access-authenticated-user-email");
+  if (cfEmail) {
+    const email = cfEmail.trim().toLowerCase();
+    let user = UserModel.getByEmail(email);
+    if (!user) {
+      const userId = `cf_${Buffer.from(email).toString("hex").slice(0, 16)}`;
+      user = UserModel.createOrUpdate({
+        id: userId,
+        email,
+        name: email.split("@")[0],
+        avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${email}`,
+        role: "user",
+      });
+    }
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatar: user.avatar,
+      role: user.role,
+    };
+  }
+
+  // 2. 標準 Session Cookie
   let cookieHeader = "";
   if ("cookies" in req && typeof (req as any).cookies?.get === "function") {
     const cookie = (req as NextRequest).cookies.get(SESSION_COOKIE_NAME);
