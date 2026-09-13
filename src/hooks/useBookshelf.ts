@@ -12,7 +12,13 @@ import { isSimplifiedChinese, convertToTraditional, convertToSimplified } from "
 import { flushUnsyncedProgress } from "@/lib/sync";
 import { parseSafeTime } from "@/lib/format";
 import { SortField, SortOrder, ShelfLayoutMode, EditingBookState, CacheAllProgress } from "@/types/bookshelf";
-import { UserSession } from "@/lib/auth";
+import {
+  UserSession,
+  getCachedUserSession,
+  setCachedUserSession,
+  getCachedUserId,
+  onAuthChange,
+} from "@/lib/clientAuth";
 
 export function useBookshelf() {
   const [books, setBooks] = useState<Book[]>([]);
@@ -44,7 +50,7 @@ export function useBookshelf() {
   const [isCachingAll, setIsCachingAll] = useState(false);
   const [cacheAllProgress, setCacheAllProgress] = useState<CacheAllProgress | null>(null);
   const [cachingBookIds, setCachingBookIds] = useState<Record<string, boolean>>({});
-  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getCachedUserSession());
   const [googleConfigured, setGoogleConfigured] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
 
@@ -171,7 +177,8 @@ export function useBookshelf() {
       if (initialBooks.length > 0) {
         setBooks(initialBooks);
         setLoading(false);
-        checkAllCaches(initialBooks);
+        const activeUserId = getCachedUserId();
+        checkAllCaches(initialBooks, activeUserId);
       }
     } catch (e) {
       console.warn("讀取本機離線快取失敗", e);
@@ -189,6 +196,7 @@ export function useBookshelf() {
         const data = await res.json();
         if (data.user) {
           setCurrentUser(data.user);
+          setCachedUserSession(data.user);
         }
         if (data.success && Array.isArray(data.books)) {
           // 關鍵修正：將伺服器書籍與本機 IndexedDB 快取書籍合併，絕不單向覆寫遺失本機書籍
@@ -238,7 +246,7 @@ export function useBookshelf() {
       const fallbackBooks = Array.from(fallbackMap.values());
       if (fallbackBooks.length > 0) {
         setBooks(fallbackBooks);
-        checkAllCaches(fallbackBooks);
+        checkAllCaches(fallbackBooks, getCachedUserId());
       }
     } finally {
       setLoading(false);
@@ -253,27 +261,35 @@ export function useBookshelf() {
         const data = await res.json();
         if (data.success) {
           setCurrentUser(data.user || null);
+          setCachedUserSession(data.user || null);
           setGoogleConfigured(Boolean(data.googleConfigured));
+          if (data.user?.id) {
+            checkAllCaches(books, data.user.id);
+          }
         }
       }
     } catch (e) {
-      console.warn("Failed to check auth session:", e);
+      console.warn("離線狀態，保持本機快取身分:", e);
     }
-  }, []);
+  }, [books, checkAllCaches]);
 
   const handleLogout = useCallback(async () => {
-    try {
-      await fetch("/api/auth/session", { method: "DELETE" });
-      setCurrentUser(null);
-      await fetchBooks();
-    } catch (e) {
-      console.warn("Logout failed:", e);
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      const proceed = confirm("目前為離線狀態，登出後需在有網路環境下才能重新登入。確定要在此裝置登出嗎？");
+      if (!proceed) return;
     }
+    try {
+      await fetch("/api/auth/session", { method: "DELETE" }).catch(() => {});
+    } catch (e) {}
+    setCachedUserSession(null);
+    setCurrentUser(null);
+    await fetchBooks();
   }, [fetchBooks]);
 
   const handleLoginSuccess = useCallback(
     (user: UserSession) => {
       setCurrentUser(user);
+      setCachedUserSession(user);
       fetchBooks();
     },
     [fetchBooks]
@@ -334,9 +350,14 @@ export function useBookshelf() {
     fetchAuthSession();
     fetchBooks();
 
+    const unsubscribeAuth = onAuthChange((user) => {
+      setCurrentUser(user);
+    });
+
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      unsubscribeAuth();
     };
   }, [fetchAuthSession, fetchBooks]);
 
@@ -377,6 +398,11 @@ export function useBookshelf() {
 
   // 一鍵離線快取所有書籍
   const handleCacheAllBooks = async () => {
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      alert("目前處於離線狀態，需連接網路才能下載雲端小說至本機快取。");
+      return;
+    }
+
     const uncached = books.filter((b) => !cachedStatus[b.id]);
     if (uncached.length === 0) {
       alert("所有書籍均已離線快取！");
@@ -436,6 +462,11 @@ export function useBookshelf() {
 
   // 上傳單一檔案
   const uploadFile = async (file: File, convertToTraditional: boolean) => {
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      alert("目前處於離線狀態，無法上傳新小說至雲端，請連接網路後再試。");
+      return;
+    }
+
     setIsUploading(true);
     const isEpub = file.name.toLowerCase().endsWith(".epub");
     setUploadStatus(
@@ -578,6 +609,11 @@ export function useBookshelf() {
   const handleCacheBook = async (e: React.MouseEvent, book: Book) => {
     e.preventDefault();
     e.stopPropagation();
+
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      alert("目前為離線狀態，無法下載雲端小說。請連接網路後再試。");
+      return;
+    }
 
     if (cachingBookIds[book.id]) return;
     setCachingBookIds((prev) => ({ ...prev, [book.id]: true }));

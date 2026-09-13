@@ -1,5 +1,6 @@
 import { openDB, DBSchema, IDBPDatabase } from "idb";
 import type { Book } from "./db";
+import { getCachedUserId } from "./clientAuth";
 
 interface NovelReaderDB extends DBSchema {
   books_content: {
@@ -203,17 +204,20 @@ export const LocalStore = {
       page_ratio?: number;
       total_pages?: number;
     },
-    userId: string = "default_user"
+    userId?: string
   ) {
     const db = await getLocalDB();
     if (!db) return;
-    const progressKey = `${userId}:${bookId}`;
+    const effectiveUserId =
+      userId && userId !== "default_user" ? userId : getCachedUserId();
+    const progressKey = `${effectiveUserId}:${bookId}`;
     const existing =
       (await db.get("local_progress", progressKey)) ||
       (await db.get("local_progress", bookId));
     const updatedAt = timestamp || new Date().toISOString();
     const newProgress = {
       book_id: progressKey,
+      user_id: effectiveUserId,
       char_offset: charOffset,
       percentage,
       chapter_index:
@@ -234,12 +238,17 @@ export const LocalStore = {
     }
   },
 
-  async getLocalProgress(bookId: string, userId: string = "default_user") {
+  async getLocalProgress(bookId: string, userId?: string) {
     const db = await getLocalDB();
     let record: any = null;
-    const progressKey = `${userId}:${bookId}`;
+    const effectiveUserId =
+      userId && userId !== "default_user" ? userId : getCachedUserId();
+    const progressKey = `${effectiveUserId}:${bookId}`;
     if (db) {
       record = await db.get("local_progress", progressKey);
+      if (!record && effectiveUserId !== "default_user") {
+        record = await db.get("local_progress", `default_user:${bookId}`);
+      }
       if (!record) {
         record = await db.get("local_progress", bookId);
       }
@@ -249,8 +258,12 @@ export const LocalStore = {
         const rawUser = localStorage.getItem(`novel_reader_prog_${progressKey}`);
         if (rawUser) record = JSON.parse(rawUser);
         else {
-          const raw = localStorage.getItem(`novel_reader_prog_${bookId}`);
-          if (raw) record = JSON.parse(raw);
+          const rawDef = localStorage.getItem(`novel_reader_prog_default_user:${bookId}`);
+          if (rawDef) record = JSON.parse(rawDef);
+          else {
+            const raw = localStorage.getItem(`novel_reader_prog_${bookId}`);
+            if (raw) record = JSON.parse(raw);
+          }
         }
       } catch (e) {}
     }
@@ -314,27 +327,55 @@ export const LocalStore = {
   }) {
     const db = await getLocalDB();
     if (!db) return;
+    const effectiveUserId =
+      bookmark.user_id && bookmark.user_id !== "default_user"
+        ? bookmark.user_id
+        : getCachedUserId();
     await db.put("bookmarks", {
       ...bookmark,
-      user_id: bookmark.user_id || "default_user",
+      user_id: effectiveUserId,
       created_at: bookmark.created_at || new Date().toISOString(),
     });
   },
 
-  async getBookmarks(bookId: string, userId: string = "default_user") {
+  async getBookmarks(bookId: string, userId?: string) {
     const db = await getLocalDB();
     if (!db) return [];
+    const effectiveUserId =
+      userId && userId !== "default_user" ? userId : getCachedUserId();
     const index = db.transaction("bookmarks").store.index("by_book");
     const all = await index.getAll(bookId);
     return all.filter(
-      (b: any) => !b.user_id || b.user_id === userId || b.user_id === "default_user"
+      (b: any) =>
+        !b.user_id ||
+        b.user_id === "default_user" ||
+        b.user_id === effectiveUserId
     );
+  },
+
+  async getDeletedBookmarkIds(): Promise<string[]> {
+    return this.getSetting<string[]>("deleted_bookmark_ids", []);
+  },
+
+  async markBookmarkDeleted(id: string) {
+    const deleted = await this.getDeletedBookmarkIds();
+    if (!deleted.includes(id)) {
+      deleted.push(id);
+      await this.setSetting("deleted_bookmark_ids", deleted);
+    }
+  },
+
+  async clearBookmarkDeleted(id: string) {
+    const deleted = await this.getDeletedBookmarkIds();
+    const next = deleted.filter((x) => x !== id);
+    await this.setSetting("deleted_bookmark_ids", next);
   },
 
   async deleteBookmark(id: string) {
     const db = await getLocalDB();
     if (!db) return;
     await db.delete("bookmarks", id);
+    await this.markBookmarkDeleted(id);
   },
 
   async setSetting(key: string, value: any) {

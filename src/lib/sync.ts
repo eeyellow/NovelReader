@@ -1,8 +1,10 @@
 import { LocalStore } from "./idb";
 import { getDeviceName } from "./device";
+import { getCachedUserId } from "./clientAuth";
 
 interface SyncPayload {
   book_id: string;
+  user_id?: string;
   char_offset: number;
   percentage: number;
   chapter_index?: number;
@@ -67,8 +69,9 @@ export function syncProgress(
 
   const deviceName = getDeviceName();
   const timestamp = new Date().toISOString();
+  const currentUserId = getCachedUserId();
 
-  // 1. Save to local IndexedDB and localStorage immediately
+  // 1. Save to local IndexedDB and localStorage immediately with user isolation
   if (typeof localStorage !== "undefined") {
     localStorage.setItem("novel_reader_last_book_id", bookId);
   }
@@ -80,11 +83,13 @@ export function syncProgress(
     deviceName,
     false,
     timestamp,
-    extra
+    extra,
+    currentUserId
   );
 
   const payload: SyncPayload = {
     book_id: bookId,
+    user_id: currentUserId,
     char_offset: Math.round(charOffset),
     percentage: Number(percentage.toFixed(2)),
     chapter_index: extra?.chapter_index,
@@ -120,7 +125,8 @@ export function syncProgress(
           deviceName,
           true,
           timestamp,
-          extra
+          extra,
+          currentUserId
         );
       }
     }
@@ -135,13 +141,17 @@ export async function flushUnsyncedProgress(): Promise<void> {
 
   try {
     const unsynced = await LocalStore.getAllUnsyncedProgress();
+    const fallbackUserId = getCachedUserId();
+
     for (const item of unsynced) {
-      const realBookId = item.book_id.includes(":")
-        ? item.book_id.split(":")[1]
-        : item.book_id;
+      const parts = item.book_id.split(":");
+      const realBookId = parts.length > 1 ? parts[1] : parts[0];
+      const itemUserId = item.user_id || (parts.length > 1 ? parts[0] : fallbackUserId);
+
       const res = await sendProgressToServer(
         {
           book_id: realBookId,
+          user_id: itemUserId,
           char_offset: item.char_offset,
           percentage: item.percentage,
           chapter_index: item.chapter_index,

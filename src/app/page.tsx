@@ -69,6 +69,7 @@ export default function BookshelfPage() {
         {/* 上傳與搜尋列 */}
         <BookUploadBar
           isUploading={shelf.isUploading}
+          isOffline={shelf.isOffline}
           uploadStatus={shelf.uploadStatus}
           searchTerm={shelf.searchTerm}
           fileInputRef={shelf.fileInputRef}

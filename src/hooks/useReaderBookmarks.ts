@@ -7,6 +7,7 @@ import { useState, useCallback } from "react";
 import { Bookmark as BookmarkType } from "@/lib/db";
 import { LocalStore } from "@/lib/idb";
 import { Chapter, findCurrentChapter } from "@/lib/parser";
+import { getCachedUserId } from "@/lib/clientAuth";
 
 interface UseReaderBookmarksOptions {
   bookId: string;
@@ -34,29 +35,42 @@ export function useReaderBookmarks({
   const [bookmarks, setBookmarks] = useState<BookmarkType[]>([]);
   const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
 
-  // 載入書籤（離線優先 + 背景非同步同步 + 雙向合併）
+  // 載入書籤（離線優先 + 背景非同步同步 + 雙向合併 + 離線刪除追蹤）
   const loadBookmarks = useCallback(async (targetBookId: string) => {
     try {
-      const localBMs = await LocalStore.getBookmarks(targetBookId);
-      if (localBMs && localBMs.length > 0) {
-        setBookmarks(localBMs);
+      const currentUserId = getCachedUserId();
+      const localBMs = await LocalStore.getBookmarks(targetBookId, currentUserId);
+      const deletedIds = new Set(await LocalStore.getDeletedBookmarkIds());
+
+      const activeLocalBMs = (localBMs || []).filter((b) => !deletedIds.has(b.id));
+      if (activeLocalBMs.length > 0) {
+        setBookmarks(activeLocalBMs);
       }
+
       const res = await fetch(`/api/bookmarks?bookId=${targetBookId}`);
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.bookmarks)) {
           const mergedMap = new Map<string, BookmarkType>();
-          for (const bm of localBMs || []) {
+          for (const bm of activeLocalBMs) {
             mergedMap.set(bm.id, bm);
           }
+
           for (const bm of data.bookmarks as BookmarkType[]) {
+            // 若該書籤曾在本機離線刪除，向伺服器補發刪除請求，不復原
+            if (deletedIds.has(bm.id)) {
+              fetch(`/api/bookmarks?id=${bm.id}`, { method: "DELETE" })
+                .then(() => LocalStore.clearBookmarkDeleted(bm.id))
+                .catch(console.warn);
+              continue;
+            }
             mergedMap.set(bm.id, { ...mergedMap.get(bm.id), ...bm });
             await LocalStore.saveBookmark(bm);
           }
 
           // 背景上傳本機新增但伺服器尚未收錄的離線書籤
           const serverIdSet = new Set(data.bookmarks.map((b: BookmarkType) => b.id));
-          for (const bm of localBMs || []) {
+          for (const bm of activeLocalBMs) {
             if (!serverIdSet.has(bm.id)) {
               fetch("/api/bookmarks", {
                 method: "POST",
@@ -83,11 +97,13 @@ export function useReaderBookmarks({
     if (!bookId || !currentChapter) return;
     const preview = currentChapterParagraphs[0]?.slice(0, 60) || currentChapter.title;
     const bmTitle = `${currentChapter.title} (第 ${currentPage + 1} 頁)`;
+    const currentUserId = getCachedUserId();
 
     const bmId = `bm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const newBookmark: BookmarkType = {
       id: bmId,
       book_id: bookId,
+      user_id: currentUserId,
       char_offset: currentOffset,
       title: bmTitle,
       preview_text: preview,
@@ -106,7 +122,7 @@ export function useReaderBookmarks({
         body: JSON.stringify(newBookmark),
       });
     } catch (e) {
-      console.warn("Failed to sync bookmark to server:", e);
+      console.warn("離線狀態，書籤已安全保存在本機：", e);
     }
   }, [bookId, currentChapter, currentChapterParagraphs, currentPage, currentOffset, onActivity]);
 
@@ -118,9 +134,12 @@ export function useReaderBookmarks({
       await LocalStore.deleteBookmark(bmId);
       setBookmarks((prev) => prev.filter((b) => b.id !== bmId));
       try {
-        await fetch(`/api/bookmarks?id=${bmId}`, { method: "DELETE" });
+        const res = await fetch(`/api/bookmarks?id=${bmId}`, { method: "DELETE" });
+        if (res.ok) {
+          await LocalStore.clearBookmarkDeleted(bmId);
+        }
       } catch (e) {
-        console.warn("Failed to delete bookmark on server:", e);
+        console.warn("離線狀態下刪除書籤，已排入待同步刪除佇列：", e);
       }
     },
     [onActivity]

@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { LocalStore } from "@/lib/idb";
+import { getCachedUserId } from "@/lib/clientAuth";
 import { extractChapters, Chapter, findCurrentChapter } from "@/lib/parser";
 import { convertToTraditional, convertToSimplified } from "@/lib/chinese";
 import { GestureAction, GestureConfig } from "@/lib/gesture/types";
@@ -56,6 +57,20 @@ export default function ReaderPage() {
   const [gestureConfig, setGestureConfig] = useState<GestureConfig>(DEFAULT_GESTURE_CONFIG);
 
   const lastTouchActionTime = useRef<number>(0);
+
+  // 離線狀態監聽
+  const [isOffline, setIsOffline] = useState(false);
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    setIsOffline(!navigator.onLine);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   // 螢幕防休眠喚醒鎖
   const { onUserActivity } = useWakeLock({ enabled: !isLoading });
@@ -269,7 +284,8 @@ export default function ReaderPage() {
       let targetPageIndex: number | null = null;
       let targetTotalPages: number | null = null;
 
-      const localProg = await LocalStore.getLocalProgress(bookId);
+      const currentUserId = getCachedUserId();
+      const localProg = await LocalStore.getLocalProgress(bookId, currentUserId);
       if (localProg) {
         targetOffset = localProg.char_offset || 0;
         if (typeof localProg.chapter_index === "number" && localProg.chapter_index >= 0) {
@@ -303,7 +319,10 @@ export default function ReaderPage() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-        const progRes = await fetch(`/api/progress?bookId=${bookId}`, { signal: controller.signal });
+        const progRes = await fetch(
+          `/api/progress?bookId=${bookId}&userId=${encodeURIComponent(currentUserId)}`,
+          { signal: controller.signal }
+        );
         clearTimeout(timeoutId);
 
         if (progRes.ok) {
@@ -543,6 +562,7 @@ export default function ReaderPage() {
         showTOC={showTOC}
         showSettings={showSettings}
         isFullscreen={isFullscreen}
+        isOffline={isOffline}
         onBackToShelf={handleBackToShelf}
         onOpenSearch={() => searchHook.setShowSearchModal(true)}
         onAddBookmark={bookmarkHook.handleAddBookmark}

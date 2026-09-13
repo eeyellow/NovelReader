@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
-import { X, LogIn, User, Sparkles, AlertCircle } from "lucide-react";
-import { UserSession } from "@/lib/auth";
+import React, { useState, useEffect } from "react";
+import { X, LogIn, User, Sparkles, AlertCircle, WifiOff } from "lucide-react";
+import { UserSession } from "@/lib/clientAuth";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -22,6 +22,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState(true);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsOnline(navigator.onLine);
+      const handleOnline = () => setIsOnline(true);
+      const handleOffline = () => setIsOnline(false);
+      window.addEventListener("online", handleOnline);
+      window.addEventListener("offline", handleOffline);
+      return () => {
+        window.removeEventListener("online", handleOnline);
+        window.removeEventListener("offline", handleOffline);
+      };
+    }
+  }, []);
 
   if (!isOpen) return null;
 
@@ -82,6 +97,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         </div>
 
+        {!isOnline && (
+          <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs flex items-center gap-2">
+            <WifiOff className="w-4 h-4 shrink-0" />
+            <span>目前處於離線狀態。已快取的小說與進度仍可正常閱讀；登入或切換帳號需要連接網路。</span>
+          </div>
+        )}
+
         {errorMsg && (
           <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
             <AlertCircle className="w-4 h-4 shrink-0" />
@@ -92,8 +114,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* Google Login Section */}
         <div className="space-y-3 mb-6">
           <a
-            href="/api/auth/google"
-            className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl border border-[var(--border-color)] bg-white hover:bg-gray-50 text-gray-800 font-medium text-sm shadow-sm hover:shadow transition-all group"
+            href={isOnline ? "/api/auth/google" : "#"}
+            className={`w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl border border-[var(--border-color)] bg-white hover:bg-gray-50 text-gray-800 font-medium text-sm shadow-sm hover:shadow transition-all group ${
+              !isOnline ? "opacity-50 pointer-events-none cursor-not-allowed" : ""
+            }`}
           >
             {/* Google Colorful Icon */}
             <svg className="w-5 h-5" viewBox="0 0 24 24">
@@ -142,7 +166,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="例如：Alice"
-              className="w-full px-3 py-2 text-sm rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)] focus:outline-none focus:border-[var(--accent-color)] transition-colors"
+              disabled={!isOnline}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)] focus:outline-none focus:border-[var(--accent-color)] transition-colors disabled:opacity-50"
             />
           </div>
 
@@ -153,17 +178,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="例如：alice@example.com"
-              className="w-full px-3 py-2 text-sm rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)] focus:outline-none focus:border-[var(--accent-color)] transition-colors"
+              disabled={!isOnline}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)] focus:outline-none focus:border-[var(--accent-color)] transition-colors disabled:opacity-50"
             />
           </div>
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full mt-2 py-2.5 px-4 rounded-xl bg-[var(--accent-color)] hover:opacity-90 text-white text-sm font-medium transition-opacity flex items-center justify-center gap-2 disabled:opacity-50"
+            disabled={loading || !isOnline}
+            className="w-full mt-2 py-2.5 px-4 rounded-xl bg-[var(--accent-color)] hover:opacity-90 text-white text-sm font-medium transition-opacity flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <User className="w-4 h-4" />
-            <span>{loading ? "登入中..." : "以自訂身分登入"}</span>
+            <span>{loading ? "登入中..." : !isOnline ? "離線狀態不可登入" : "以自訂身分登入"}</span>
           </button>
         </form>
       </div>

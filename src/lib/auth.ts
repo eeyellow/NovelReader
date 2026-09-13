@@ -4,13 +4,8 @@ import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { DATA_DIR, UserModel, User } from "./db";
 
-export interface UserSession {
-  id: string;
-  email: string;
-  name: string;
-  avatar?: string;
-  role: "admin" | "user";
-}
+import type { UserSession } from "./clientAuth";
+export type { UserSession };
 
 const SESSION_COOKIE_NAME = "nr_session";
 const STATE_COOKIE_NAME = "nr_oauth_state";

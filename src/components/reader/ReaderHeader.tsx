@@ -14,6 +14,7 @@ import {
   MousePointerClick,
   Maximize,
   Minimize,
+  WifiOff,
 } from "lucide-react";
 
 interface ReaderHeaderProps {
@@ -24,6 +25,7 @@ interface ReaderHeaderProps {
   showTOC: boolean;
   showSettings: boolean;
   isFullscreen: boolean;
+  isOffline?: boolean;
   onBackToShelf: () => void;
   onOpenSearch: () => void;
   onAddBookmark: () => void;
@@ -42,6 +44,7 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
   showTOC,
   showSettings,
   isFullscreen,
+  isOffline,
   onBackToShelf,
   onOpenSearch,
   onAddBookmark,
@@ -67,7 +70,17 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="truncate">
-          <h1 className="text-sm font-bold truncate">{title}</h1>
+          <div className="flex items-center gap-1.5 truncate">
+            <h1 className="text-sm font-bold truncate">{title}</h1>
+            {isOffline && (
+              <span
+                className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium shrink-0"
+                title="離線閱讀中，進度與書籤安全保存於本機"
+              >
+                <WifiOff className="w-2.5 h-2.5 mr-0.5" /> 離線
+              </span>
+            )}
+          </div>
           <p className="text-[11px] text-[var(--text-muted)] truncate">
             {processedChapterTitle}
           </p>
