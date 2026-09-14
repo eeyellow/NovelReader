@@ -12,7 +12,7 @@ try {
   const content = fs.readFileSync(swPath, 'utf8');
   let version = Date.now().toString(36);
   try {
-    const gitHash = execSync('git rev-parse --short HEAD', {
+    const gitHash = execSync('git rev-parse --short=7 HEAD', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();

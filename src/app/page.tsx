@@ -17,6 +17,7 @@ import { SimplifiedConvertModal } from "@/components/bookshelf/SimplifiedConvert
 import { RenameModal } from "@/components/bookshelf/RenameModal";
 import { StorageModal } from "@/components/bookshelf/StorageModal";
 import { AuthModal } from "@/components/auth/AuthModal";
+import { SystemInfoModal } from "@/components/bookshelf/SystemInfoModal";
 
 export default function BookshelfPage() {
   const shelf = useBookshelf();
@@ -62,6 +63,10 @@ export default function BookshelfPage() {
         onRefresh={shelf.fetchBooks}
         onOpenAuthModal={() => shelf.setShowAuthModal(true)}
         onLogout={shelf.handleLogout}
+        onOpenSystemInfo={() => {
+          shelf.fetchStorageInfo();
+          shelf.setShowSystemInfoModal(true);
+        }}
       />
 
       {/* 主內容區 */}
@@ -223,6 +228,19 @@ export default function BookshelfPage() {
         currentUser={shelf.currentUser}
         googleConfigured={shelf.googleConfigured}
         onLoginSuccess={shelf.handleLoginSuccess}
+      />
+
+      {/* 系統資訊與版本對話框 */}
+      <SystemInfoModal
+        isOpen={shelf.showSystemInfoModal}
+        onClose={() => shelf.setShowSystemInfoModal(false)}
+        isOffline={shelf.isOffline}
+        deviceName={shelf.deviceName}
+        currentUser={shelf.currentUser}
+        totalBooksCount={shelf.books.length}
+        cachedCount={cachedCount}
+        storageUsage={shelf.storageUsage}
+        storageQuota={shelf.storageQuota}
       />
     </div>
   );

@@ -53,6 +53,7 @@ export function useBookshelf() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getCachedUserSession());
   const [googleConfigured, setGoogleConfigured] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showSystemInfoModal, setShowSystemInfoModal] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
@@ -882,6 +883,8 @@ export function useBookshelf() {
     googleConfigured,
     showAuthModal,
     setShowAuthModal,
+    showSystemInfoModal,
+    setShowSystemInfoModal,
     handleLogout,
     handleLoginSuccess,
   };

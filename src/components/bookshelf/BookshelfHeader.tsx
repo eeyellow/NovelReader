@@ -29,6 +29,7 @@ interface BookshelfHeaderProps {
   onRefresh: () => void;
   onOpenAuthModal: () => void;
   onLogout: () => void;
+  onOpenSystemInfo: () => void;
 }
 
 export const BookshelfHeader: React.FC<BookshelfHeaderProps> = ({
@@ -46,6 +47,7 @@ export const BookshelfHeader: React.FC<BookshelfHeaderProps> = ({
   onRefresh,
   onOpenAuthModal,
   onLogout,
+  onOpenSystemInfo,
 }) => {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -78,9 +80,15 @@ export const BookshelfHeader: React.FC<BookshelfHeaderProps> = ({
     <header className="sticky top-0 z-30 backdrop-blur-md border-b border-[var(--border-color)] bg-[var(--header-bg)] px-4 sm:px-8 py-3.5 flex items-center justify-between gap-2">
       {/* Brand & Status */}
       <div className="flex items-center space-x-3 min-w-0">
-        <div className="p-2 rounded-xl bg-[var(--accent-color)] text-white shadow-sm shrink-0">
+        <button
+          type="button"
+          onClick={onOpenSystemInfo}
+          className="p-2 rounded-xl bg-[var(--accent-color)] text-white shadow-sm shrink-0 hover:opacity-90 active:scale-95 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]/50"
+          title="系統資訊 (點擊查看版本)"
+          aria-label="查看系統資訊"
+        >
           <BookOpen className="w-5 h-5" />
-        </div>
+        </button>
         <div className="min-w-0">
           <h1 className="text-lg font-bold tracking-tight truncate">小說書架</h1>
           <p className="text-xs">
