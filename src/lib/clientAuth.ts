@@ -36,12 +36,25 @@ export function getCachedUserSession(): UserSession | null {
 export function setCachedUserSession(user: UserSession | null): void {
   if (typeof window === "undefined") return;
   try {
+    const prev = getCachedUserSession();
+    const isSame =
+      (!prev && !user) ||
+      (prev &&
+        user &&
+        prev.id === user.id &&
+        prev.email === user.email &&
+        prev.name === user.name &&
+        prev.role === user.role);
+
     if (user) {
       localStorage.setItem(USER_SESSION_KEY, JSON.stringify(user));
     } else {
       localStorage.removeItem(USER_SESSION_KEY);
     }
-    window.dispatchEvent(new CustomEvent(AUTH_EVENT_NAME, { detail: user }));
+
+    if (!isSame) {
+      window.dispatchEvent(new CustomEvent(AUTH_EVENT_NAME, { detail: user }));
+    }
   } catch (e) {
     console.warn("Failed to set cached user session:", e);
   }

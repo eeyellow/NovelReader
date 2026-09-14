@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookModel, UPLOADS_DIR } from "@/lib/db";
-import { getSessionFromRequest } from "@/lib/auth";
+import { getSessionFromRequest, setSessionCookie } from "@/lib/auth";
 import { decodeToUtf8 } from "@/lib/encoding";
 import { convertToTraditional, isSimplifiedChinese } from "@/lib/chinese";
 import fs from "fs";
@@ -15,7 +15,23 @@ export async function GET(req: NextRequest) {
     const session = getSessionFromRequest(req);
     const userId = session?.id || "default_user";
     const books = BookModel.getAll(userId);
-    return NextResponse.json({ success: true, books, user: session || null });
+    const isCloudflare = Boolean(req.headers.get("cf-access-authenticated-user-email"));
+
+    const res = NextResponse.json(
+      { success: true, books, user: session || null },
+      {
+        headers: {
+          "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+          Pragma: "no-cache",
+        },
+      }
+    );
+
+    if (session && isCloudflare && !req.cookies.get("nr_session")) {
+      setSessionCookie(res, session);
+    }
+
+    return res;
   } catch (error: any) {
     console.error("Failed to fetch books:", error);
     return NextResponse.json(

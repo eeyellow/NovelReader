@@ -57,6 +57,13 @@ export function useBookshelf() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
   const isSyncingMissingRef = useRef(false);
+  const booksRef = useRef<Book[]>([]);
+  const isFetchingBooksRef = useRef(false);
+  const isFetchingAuthRef = useRef(false);
+
+  useEffect(() => {
+    booksRef.current = books;
+  }, [books]);
 
   // 自動檢測並補救同步「本機 IndexedDB 存在但伺服器端 SQLite 缺失」的小說文本
   const syncLocalMissingBooksToServer = useCallback(
@@ -156,40 +163,47 @@ export function useBookshelf() {
 
   // 取得書庫清單（離線優先 + 背景非同步雲端同步 + 本機快取智能合併）
   const fetchBooks = useCallback(async () => {
-    // 1. 離線優先：立即讀取本機快取與 IndexedDB 內容，做到 0 延遲秒開畫面，且防止離線書籍被拋棄
-    try {
-      const [cachedList, localContentBooks] = await Promise.all([
-        LocalStore.getSetting<Book[]>("cached_book_list", []),
-        LocalStore.getAllCachedBooks(),
-      ]);
+    if (isFetchingBooksRef.current) return;
+    isFetchingBooksRef.current = true;
 
-      const initialMap = new Map<string, Book>();
-      // 先放 IndexedDB 內實體快取的書
-      for (const b of localContentBooks) {
-        initialMap.set(b.id, b);
-      }
-      // 再放先前快取的列表（補充可能有的章節、字數等後設資料）
-      for (const b of cachedList || []) {
-        initialMap.set(b.id, { ...initialMap.get(b.id), ...b });
-      }
+    // 1. 離線優先：僅在目前尚未有書單時才從 IndexedDB 載入，防止重複載入導致畫面閃爍
+    if (booksRef.current.length === 0) {
+      try {
+        const [cachedList, localContentBooks] = await Promise.all([
+          LocalStore.getSetting<Book[]>("cached_book_list", []),
+          LocalStore.getAllCachedBooks(),
+        ]);
 
-      const initialBooks = Array.from(initialMap.values());
-      if (initialBooks.length > 0) {
-        setBooks(initialBooks);
-        setLoading(false);
-        const activeUserId = getCachedUserId();
-        checkAllCaches(initialBooks, activeUserId);
+        const initialMap = new Map<string, Book>();
+        for (const b of localContentBooks) {
+          initialMap.set(b.id, b);
+        }
+        for (const b of cachedList || []) {
+          initialMap.set(b.id, { ...initialMap.get(b.id), ...b });
+        }
+
+        const initialBooks = Array.from(initialMap.values());
+        if (initialBooks.length > 0) {
+          setBooks(initialBooks);
+          setLoading(false);
+          const activeUserId = getCachedUserId();
+          checkAllCaches(initialBooks, activeUserId);
+        }
+      } catch (e) {
+        console.warn("讀取本機離線快取失敗", e);
       }
-    } catch (e) {
-      console.warn("讀取本機離線快取失敗", e);
     }
 
-    // 2. 背景非阻塞發送請求與雲端/NAS 比對同步
+    // 2. 背景非阻塞發送請求與雲端/NAS 比對同步（強制 no-store，避免快取到舊身分）
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-      const res = await fetch("/api/books", { signal: controller.signal });
+      const res = await fetch("/api/books", {
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache" },
+        signal: controller.signal,
+      });
       clearTimeout(timeoutId);
 
       if (res.ok) {
@@ -199,16 +213,13 @@ export function useBookshelf() {
           setCachedUserSession(data.user);
         }
         if (data.success && Array.isArray(data.books)) {
-          // 關鍵修正：將伺服器書籍與本機 IndexedDB 快取書籍合併，絕不單向覆寫遺失本機書籍
           const localContentBooks = await LocalStore.getAllCachedBooks();
           const mergedMap = new Map<string, Book>();
 
-          // 先填入本機 IndexedDB 實體快取書（防止伺服器端缺少或斷開時被消除）
           for (const b of localContentBooks) {
             mergedMap.set(b.id, b);
           }
 
-          // 再以伺服器回傳的權威書單補充/更新
           for (const b of data.books as Book[]) {
             mergedMap.set(b.id, {
               ...mergedMap.get(b.id),
@@ -223,7 +234,6 @@ export function useBookshelf() {
           LocalStore.setSetting("cached_book_list", mergedBooks);
           flushUnsyncedProgress().catch(console.warn);
 
-          // 核心修復：若手機本機 IndexedDB 有完整小說，但伺服器端 SQLite 未記錄，主動背景補救同步回後端！
           syncLocalMissingBooksToServer(localContentBooks, data.books as Book[]).catch(console.warn);
         }
       } else {
@@ -232,46 +242,57 @@ export function useBookshelf() {
     } catch (e) {
       console.warn("伺服器無法連線或逾時，保持離線快取模式", e);
       setIsOffline(true);
-      const [cached, localBooks] = await Promise.all([
-        LocalStore.getSetting<Book[]>("cached_book_list", []),
-        LocalStore.getAllCachedBooks(),
-      ]);
-      const fallbackMap = new Map<string, Book>();
-      for (const b of localBooks || []) {
-        fallbackMap.set(b.id, b);
-      }
-      for (const b of cached || []) {
-        fallbackMap.set(b.id, { ...fallbackMap.get(b.id), ...b });
-      }
-      const fallbackBooks = Array.from(fallbackMap.values());
-      if (fallbackBooks.length > 0) {
-        setBooks(fallbackBooks);
-        checkAllCaches(fallbackBooks, getCachedUserId());
+      if (booksRef.current.length === 0) {
+        const [cached, localBooks] = await Promise.all([
+          LocalStore.getSetting<Book[]>("cached_book_list", []),
+          LocalStore.getAllCachedBooks(),
+        ]);
+        const fallbackMap = new Map<string, Book>();
+        for (const b of localBooks || []) fallbackMap.set(b.id, b);
+        for (const b of cached || []) fallbackMap.set(b.id, { ...fallbackMap.get(b.id), ...b });
+        const fallbackBooks = Array.from(fallbackMap.values());
+        if (fallbackBooks.length > 0) {
+          setBooks(fallbackBooks);
+          checkAllCaches(fallbackBooks, getCachedUserId());
+        }
       }
     } finally {
       setLoading(false);
+      isFetchingBooksRef.current = false;
     }
   }, [checkAllCaches, syncLocalMissingBooksToServer]);
 
-  // 取得使用者驗證狀態
+  // 取得使用者驗證狀態（強制 no-store 杜絕訪客狀態快取）
   const fetchAuthSession = useCallback(async () => {
+    if (isFetchingAuthRef.current) return;
+    isFetchingAuthRef.current = true;
     try {
-      const res = await fetch("/api/auth/session");
+      const res = await fetch("/api/auth/session", {
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache" },
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          setCurrentUser(data.user || null);
-          setCachedUserSession(data.user || null);
+          if (data.user) {
+            setCurrentUser(data.user);
+            setCachedUserSession(data.user);
+          } else {
+            setCurrentUser(null);
+            setCachedUserSession(null);
+          }
           setGoogleConfigured(Boolean(data.googleConfigured));
-          if (data.user?.id) {
-            checkAllCaches(books, data.user.id);
+          if (data.user?.id && booksRef.current.length > 0) {
+            checkAllCaches(booksRef.current, data.user.id);
           }
         }
       }
     } catch (e) {
       console.warn("離線狀態，保持本機快取身分:", e);
+    } finally {
+      isFetchingAuthRef.current = false;
     }
-  }, [books, checkAllCaches]);
+  }, [checkAllCaches]);
 
   const handleLogout = useCallback(async () => {
     if (typeof window !== "undefined" && !navigator.onLine) {
@@ -295,11 +316,19 @@ export function useBookshelf() {
     [fetchBooks]
   );
 
-  // 初始化主題、偏好設定、網路監聽與接續閱讀檢查
+  // 初始化主題、偏好設定、網路監聽與接續閱讀檢查（僅在初次掛載執行）
   useEffect(() => {
     // 0. PWA / App 啟動自動接續上次閱讀檢查
     if (typeof window !== "undefined") {
       const searchParams = new URLSearchParams(window.location.search);
+      // 清理登入成功後的 query 參數，避免重複閃動
+      if (searchParams.has("login_success")) {
+        searchParams.delete("login_success");
+        const cleanSearch = searchParams.toString();
+        const cleanUrl = window.location.pathname + (cleanSearch ? `?${cleanSearch}` : "");
+        window.history.replaceState({}, "", cleanUrl);
+      }
+
       const isManualShelf =
         searchParams.get("from") === "reader" || searchParams.get("shelf") === "1";
 
@@ -359,7 +388,8 @@ export function useBookshelf() {
       window.removeEventListener("offline", handleOffline);
       unsubscribeAuth();
     };
-  }, [fetchAuthSession, fetchBooks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSetLayout = (mode: ShelfLayoutMode) => {
     setLayoutMode(mode);

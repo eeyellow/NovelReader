@@ -16,13 +16,21 @@ export async function GET(req: NextRequest) {
     const { isConfigured, clientId } = getGoogleConfig();
     const isCloudflare = Boolean(req.headers.get("cf-access-authenticated-user-email"));
 
-    const res = NextResponse.json({
-      success: true,
-      user: session,
-      googleConfigured: isConfigured,
-      googleClientId: clientId,
-      isCloudflare,
-    });
+    const res = NextResponse.json(
+      {
+        success: true,
+        user: session,
+        googleConfigured: isConfigured,
+        googleClientId: clientId,
+        isCloudflare,
+      },
+      {
+        headers: {
+          "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+          Pragma: "no-cache",
+        },
+      }
+    );
 
     if (session && isCloudflare && !req.cookies.get("nr_session")) {
       setSessionCookie(res, session);
