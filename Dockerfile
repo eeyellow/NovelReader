@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for NovelReader PWA
 FROM node:22-alpine AS base
 WORKDIR /app
-RUN apk add --no-cache libc6-compat python3 make g++
+RUN apk add --no-cache libc6-compat python3 make g++ git
 
 # 1. Install dependencies
 FROM base AS deps
@@ -10,6 +10,8 @@ RUN npm ci
 
 # 2. Build Next.js standalone
 FROM base AS builder
+ARG GIT_COMMIT_SHA
+ENV NEXT_PUBLIC_GIT_COMMIT_SHA=$GIT_COMMIT_SHA
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1

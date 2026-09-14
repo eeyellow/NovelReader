@@ -1,4 +1,6 @@
 import { execSync } from "child_process";
+import fs from "fs";
+import path from "path";
 
 let gitCommitSha =
   process.env.NEXT_PUBLIC_GIT_COMMIT_SHA ||
@@ -13,11 +15,24 @@ if (!gitCommitSha) {
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
-    gitCommitSha = "dev";
+    // 容器無 git 或非 git 目錄時從 version.json 讀取
+    try {
+      const vJsonPath = path.resolve("./src/constants/version.json");
+      if (fs.existsSync(vJsonPath)) {
+        const vData = JSON.parse(fs.readFileSync(vJsonPath, "utf8"));
+        gitCommitSha = vData.commit || "";
+      }
+    } catch {}
   }
 }
 
+if (!gitCommitSha) {
+  gitCommitSha = "c92f069";
+}
+
 const buildTime = new Date().toISOString();
+process.env.NEXT_PUBLIC_GIT_COMMIT_SHA = gitCommitSha;
+process.env.NEXT_PUBLIC_BUILD_TIME = buildTime;
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
