@@ -400,5 +400,51 @@ export const LocalStore = {
     const record = await db.get("chapters_cache", bookId);
     return record?.chapters || null;
   },
+
+  async getPendingUploads(): Promise<PendingUploadBook[]> {
+    return this.getSetting<PendingUploadBook[]>("pending_book_uploads", []);
+  },
+
+  async savePendingUpload(item: PendingUploadBook): Promise<void> {
+    const list = await this.getPendingUploads();
+    const filtered = list.filter((b) => b.id !== item.id);
+    filtered.push(item);
+    await this.setSetting("pending_book_uploads", filtered);
+  },
+
+  async removePendingUpload(bookId: string): Promise<void> {
+    const list = await this.getPendingUploads();
+    const next = list.filter((b) => b.id !== bookId);
+    await this.setSetting("pending_book_uploads", next);
+  },
+
+  async getRemovedBookIds(): Promise<string[]> {
+    return this.getSetting<string[]>("locally_removed_book_ids", []);
+  },
+
+  async markBookRemoved(bookId: string): Promise<void> {
+    const list = await this.getRemovedBookIds();
+    if (!list.includes(bookId)) {
+      list.push(bookId);
+      await this.setSetting("locally_removed_book_ids", list);
+    }
+  },
+
+  async unmarkBookRemoved(bookId: string): Promise<void> {
+    const list = await this.getRemovedBookIds();
+    const next = list.filter((id) => id !== bookId);
+    await this.setSetting("locally_removed_book_ids", next);
+  },
 };
+
+export interface PendingUploadBook {
+  id: string;
+  title: string;
+  content: string;
+  fileSize: number;
+  totalChars: number;
+  originalFileName: string;
+  convertToTraditional?: boolean;
+  createdAt: string;
+}
 

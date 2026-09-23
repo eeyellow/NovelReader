@@ -60,44 +60,6 @@ export async function GET(
   }
 }
 
-export async function DELETE(
-  req: NextRequest,
-  context: { params: Promise<{ id: string }> }
-) {
-  try {
-    const { id } = await context.params;
-    const session = getSessionFromRequest(req);
-    const book = BookModel.getById(id);
-    if (!book) {
-      return NextResponse.json(
-        { success: false, error: "Book not found" },
-        { status: 404 }
-      );
-    }
-
-    // Check permissions: admin, default_user or the original uploader can delete
-    const isAuthorized =
-      !book.uploader_id ||
-      book.uploader_id === "default_user" ||
-      session?.role === "admin" ||
-      (session?.id && book.uploader_id === session.id);
-
-    if (!isAuthorized) {
-      return NextResponse.json(
-        { success: false, error: "您沒有權限刪除其他使用者上傳的書籍" },
-        { status: 403 }
-      );
-    }
-
-    BookModel.delete(id);
-    return NextResponse.json({ success: true, message: "Book deleted" });
-  } catch (error: any) {
-    return NextResponse.json(
-      { success: false, error: error.message || "Failed to delete book" },
-      { status: 500 }
-    );
-  }
-}
 
 export async function PATCH(
   req: NextRequest,

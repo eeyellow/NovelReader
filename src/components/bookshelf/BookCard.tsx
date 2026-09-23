@@ -39,11 +39,6 @@ export const BookCard: React.FC<BookCardProps> = ({
       ? localProgressData.percentage
       : book.percentage || 0;
 
-  const canDelete =
-    !book.uploader_id ||
-    book.uploader_id === "default_user" ||
-    currentUser?.role === "admin" ||
-    (currentUser && book.uploader_id === currentUser.id);
 
   const handleLinkClick = () => {
     if (typeof window !== "undefined") {
@@ -199,25 +194,14 @@ export const BookCard: React.FC<BookCardProps> = ({
             >
               <Pencil className="w-3.5 h-3.5" />
             </button>
-            {canDelete ? (
-              <button
-                onClick={(e) => onDelete(e, book)}
-                className="p-1 rounded text-[var(--text-muted)] hover:text-red-500 transition-colors opacity-60 hover:opacity-100"
-                title="刪除小說"
-                aria-label="刪除小說"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            ) : (
-              <button
-                disabled
-                className="p-1 rounded text-[var(--text-muted)] opacity-20 cursor-not-allowed"
-                title="僅上傳者或管理員可刪除此書籍"
-                aria-label="僅上傳者或管理員可刪除此書籍"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
+            <button
+              onClick={(e) => onDelete(e, book)}
+              className="p-1 rounded text-[var(--text-muted)] hover:text-red-500 transition-colors opacity-60 hover:opacity-100"
+              title="從此裝置書架移除小說"
+              aria-label="從此裝置書架移除小說"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       </div>

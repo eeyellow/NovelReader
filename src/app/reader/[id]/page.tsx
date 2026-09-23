@@ -22,6 +22,7 @@ import { useReaderBookmarks } from "@/hooks/useReaderBookmarks";
 import { useReaderSearch } from "@/hooks/useReaderSearch";
 import { useReaderPagination } from "@/hooks/useReaderPagination";
 import { parseSafeTime } from "@/lib/format";
+import { syncProgress, flushAllSyncTasks } from "@/lib/sync";
 import { GestureOverlay } from "@/components/gesture/GestureOverlay";
 import { GestureSettingsModal } from "@/components/gesture/GestureSettingsModal";
 import { ReaderHeader } from "@/components/reader/ReaderHeader";
@@ -58,19 +59,6 @@ export default function ReaderPage() {
 
   const lastTouchActionTime = useRef<number>(0);
 
-  // 離線狀態監聽
-  const [isOffline, setIsOffline] = useState(false);
-  useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
-    const handleOffline = () => setIsOffline(true);
-    setIsOffline(!navigator.onLine);
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
-  }, []);
 
   // 螢幕防休眠喚醒鎖
   const { onUserActivity } = useWakeLock({ enabled: !isLoading });
@@ -174,7 +162,94 @@ export default function ReaderPage() {
     },
   });
 
-  // 載入書籍檔案與本機進度
+  // 離線狀態監聽與恢復連線跨裝置進度自動同步
+  const [isOffline, setIsOffline] = useState(false);
+
+  const checkServerProgressConflict = useCallback(async () => {
+    if (!bookId || typeof window === "undefined" || !navigator.onLine) return;
+    try {
+      const currentUserId = getCachedUserId();
+      const localProg = await LocalStore.getLocalProgress(bookId, currentUserId);
+      const targetOffset = pagination.currentOffset;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+      const progRes = await fetch(
+        `/api/progress?bookId=${encodeURIComponent(bookId)}&userId=${encodeURIComponent(currentUserId)}`,
+        { signal: controller.signal }
+      );
+      clearTimeout(timeoutId);
+
+      if (progRes.ok) {
+        const progData = await progRes.json();
+        if (progData.success && progData.progress) {
+          const sProg = progData.progress;
+          const sTime = parseSafeTime(sProg.updated_at);
+          const lTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
+
+          if (sTime > lTime + 3000 && Math.abs(sProg.char_offset - targetOffset) > 300) {
+            pagination.setConflictPrompt({
+              serverOffset: sProg.char_offset,
+              serverPercentage: sProg.percentage,
+              deviceName: sProg.device_name || "其他裝置",
+            });
+          }
+        }
+      }
+    } catch (e) {}
+  }, [bookId, pagination]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOffline(false);
+      flushAllSyncTasks().catch(console.warn);
+
+      // 連線恢復時，若本機有進度，立即強制同步至伺服器
+      if (bookId && totalChars > 0) {
+        const curOffset = pagination.currentOffset;
+        const curPage = pagination.currentPage;
+        const totPages = pagination.totalPages;
+        const pageRatio = totPages > 0 ? curPage / totPages : 0;
+        const percentage = Number(((curOffset / totalChars) * 100).toFixed(2));
+        syncProgress(bookId, curOffset, percentage, true, {
+          chapter_index: currentChapterIdx,
+          page_index: curPage,
+          page_ratio: pageRatio,
+          total_pages: totPages,
+        });
+      }
+
+      checkServerProgressConflict();
+    };
+
+    const handleOffline = () => setIsOffline(true);
+    setIsOffline(!navigator.onLine);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && navigator.onLine) {
+        checkServerProgressConflict();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [
+    bookId,
+    totalChars,
+    currentChapterIdx,
+    pagination.currentOffset,
+    pagination.currentPage,
+    pagination.totalPages,
+    checkServerProgressConflict,
+  ]);
+
   useEffect(() => {
     if (!bookId) return;
 
@@ -315,35 +390,7 @@ export default function ReaderPage() {
       setIsLoading(false);
 
       // 4. 背景非阻塞檢查雲端進度衝突（不卡頓閱讀畫面）
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2500);
-
-        const progRes = await fetch(
-          `/api/progress?bookId=${bookId}&userId=${encodeURIComponent(currentUserId)}`,
-          { signal: controller.signal }
-        );
-        clearTimeout(timeoutId);
-
-        if (progRes.ok) {
-          const progData = await progRes.json();
-          if (progData.success && progData.progress) {
-            const sProg = progData.progress;
-            const sTime = parseSafeTime(sProg.updated_at);
-            const lTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
-
-            if (sTime > lTime + 3000 && Math.abs(sProg.char_offset - targetOffset) > 300) {
-              pagination.setConflictPrompt({
-                serverOffset: sProg.char_offset,
-                serverPercentage: sProg.percentage,
-                deviceName: sProg.device_name || "其他裝置",
-              });
-            }
-          }
-        }
-      } catch (e) {
-        // 離線模式或超時忽略
-      }
+      checkServerProgressConflict();
     };
 
     loadBookData();

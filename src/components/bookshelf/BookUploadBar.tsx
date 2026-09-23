@@ -25,7 +25,6 @@ export const BookUploadBar: React.FC<BookUploadBarProps> = ({
       {/* Upload Dropzone / Button */}
       <div
         onClick={() => {
-          if (isOffline) return;
           fileInputRef.current?.click();
         }}
         onDragOver={(e) => {
@@ -35,14 +34,10 @@ export const BookUploadBar: React.FC<BookUploadBarProps> = ({
         onDrop={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (!isOffline) {
-            onFileSelect(e.dataTransfer.files);
-          }
+          onFileSelect(e.dataTransfer.files);
         }}
-        className={`md:col-span-2 group border-2 border-dashed rounded-2xl p-5 flex items-center justify-between transition-all duration-200 shadow-sm ${
-          isOffline
-            ? "border-[var(--border-color)] bg-[var(--card-bg)] opacity-70 cursor-not-allowed"
-            : "border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--card-bg)] hover:bg-opacity-80 cursor-pointer"
+        className={`md:col-span-2 group border-2 border-dashed rounded-2xl p-5 flex items-center justify-between transition-all duration-200 shadow-sm border-[var(--border-color)] hover:border-[var(--accent-color)] bg-[var(--card-bg)] hover:bg-opacity-80 cursor-pointer ${
+          isOffline ? "border-amber-500/40" : ""
         }`}
       >
         <input
@@ -50,14 +45,13 @@ export const BookUploadBar: React.FC<BookUploadBarProps> = ({
           ref={fileInputRef}
           accept=".txt,.epub,text/plain,application/epub+zip"
           className="hidden"
-          disabled={isOffline}
           onChange={(e) => onFileSelect(e.target.files)}
         />
         <div className="flex items-center space-x-4">
           <div
             className={`p-3 rounded-xl transition-transform ${
               isOffline
-                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 group-hover:scale-105"
                 : "bg-[var(--accent-color)] bg-opacity-10 text-[var(--accent-color)] group-hover:scale-105"
             }`}
           >
@@ -65,27 +59,21 @@ export const BookUploadBar: React.FC<BookUploadBarProps> = ({
           </div>
           <div>
             <p className="font-semibold text-sm sm:text-base">
-              {isOffline
-                ? "離線模式中（目前可正常閱讀已快取小說）"
-                : isUploading
+              {isUploading
                 ? uploadStatus
+                : isOffline
+                ? "點擊或拖曳小說上傳（離線優先）"
                 : "點擊或拖曳 .TXT / .EPUB 小說上傳"}
             </p>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">
               {isOffline
-                ? "恢復網路連線後即可上傳小說並同步至共用雲端"
+                ? "離線狀態亦可即時解析入庫開讀，待連線後自動同步至雲端"
                 : "自動識別 UTF-8、Big5、GBK 及 EPUB 結構並同步至私有雲"}
             </p>
           </div>
         </div>
-        <span
-          className={`hidden sm:inline-block text-xs px-3 py-1.5 rounded-lg border font-medium ${
-            isOffline
-              ? "border-[var(--border-color)] text-[var(--text-muted)] opacity-50"
-              : "border-[var(--border-color)] text-[var(--text-muted)] group-hover:border-[var(--accent-color)] group-hover:text-[var(--accent-color)]"
-          }`}
-        >
-          {isOffline ? "暫停上傳" : "選擇檔案"}
+        <span className="hidden sm:inline-block text-xs px-3 py-1.5 rounded-lg border font-medium border-[var(--border-color)] text-[var(--text-muted)] group-hover:border-[var(--accent-color)] group-hover:text-[var(--accent-color)]">
+          {isOffline ? "離線上傳" : "選擇檔案"}
         </span>
       </div>
 

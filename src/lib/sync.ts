@@ -173,15 +173,86 @@ export async function flushUnsyncedProgress(): Promise<void> {
   }
 }
 
+/**
+ * 同步離線時待上傳的小說至伺服器
+ */
+export async function syncPendingUploads(): Promise<string[]> {
+  if (typeof window === "undefined" || !navigator.onLine) return [];
+
+  const syncedBookIds: string[] = [];
+  try {
+    const pendingList = await LocalStore.getPendingUploads();
+    if (pendingList.length === 0) return [];
+
+    console.log(`[SyncEngine] 偵測到 ${pendingList.length} 本離線上傳的小說，開始同步至雲端...`);
+
+    for (const item of pendingList) {
+      try {
+        const blob = new Blob([item.content], { type: "text/plain;charset=utf-8" });
+        const file = new File([blob], item.originalFileName || `${item.title}.txt`, {
+          type: "text/plain",
+        });
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("title", item.title);
+        formData.append("id", item.id);
+        if (item.convertToTraditional) {
+          formData.append("convertToTraditional", "true");
+        }
+
+        const res = await fetch("/api/books", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success) {
+            await LocalStore.removePendingUpload(item.id);
+            syncedBookIds.push(item.id);
+            console.log(`[SyncEngine] 《${item.title}》已成功同步至伺服器！`);
+          }
+        }
+      } catch (err) {
+        console.warn(`[SyncEngine] 書籍《${item.title}》同步失敗，保留於佇列等待下次重試:`, err);
+      }
+    }
+  } catch (e) {
+    console.warn("[SyncEngine] 讀取待同步書籍失敗:", e);
+  }
+
+  return syncedBookIds;
+}
+
+/**
+ * 完整同步引擎：並行同步未同步進度與離線上傳小說至伺服器
+ */
+export async function flushAllSyncTasks(): Promise<{ syncedBookIds: string[] }> {
+  if (typeof window === "undefined" || !navigator.onLine) {
+    return { syncedBookIds: [] };
+  }
+
+  const [syncedBookIds] = await Promise.all([
+    syncPendingUploads().catch((e) => {
+      console.warn("syncPendingUploads error:", e);
+      return [] as string[];
+    }),
+    flushUnsyncedProgress().catch((e) => console.warn("flushUnsyncedProgress error:", e)),
+  ]);
+
+  return { syncedBookIds };
+}
+
 // Auto-register online listener to flush sync queue
 if (typeof window !== "undefined") {
   window.addEventListener("online", () => {
-    flushUnsyncedProgress().catch(console.warn);
+    flushAllSyncTasks().catch(console.warn);
   });
   // Auto-flush pending syncs on startup if already online
   if (navigator.onLine) {
     setTimeout(() => {
-      flushUnsyncedProgress().catch(console.warn);
+      flushAllSyncTasks().catch(console.warn);
     }, 2000);
   }
 }
