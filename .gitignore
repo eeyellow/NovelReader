@@ -34,3 +34,6 @@ next-env.d.ts
 
 # local persistent novel data
 data/
+
+# local deployment scripts
+deploy.ps1
