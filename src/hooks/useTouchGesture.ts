@@ -25,9 +25,14 @@ export function useTouchGesture({
   const isPinchingRef = useRef(false);
   const hasMovedRef = useRef(false);
 
-  // Trigger light haptic feedback on mobile devices
+  // Trigger light haptic feedback on mobile devices (disabled by default to save battery)
   const triggerHaptic = useCallback(() => {
-    if (typeof navigator !== "undefined" && navigator.vibrate) {
+    if (
+      typeof window !== "undefined" &&
+      localStorage.getItem("novel_reader_haptic") === "true" &&
+      typeof navigator !== "undefined" &&
+      navigator.vibrate
+    ) {
       try {
         navigator.vibrate(8);
       } catch (e) {
