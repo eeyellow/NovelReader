@@ -223,20 +223,20 @@ export async function syncPendingUploads(): Promise<string[]> {
 }
 
 /**
- * 完整同步引擎：並行同步未同步進度與離線上傳小說至伺服器
+ * 完整同步引擎：依序同步離線上傳小說至伺服器後，再同步閱讀進度，防止觸發外鍵約束錯誤
  */
 export async function flushAllSyncTasks(): Promise<{ syncedBookIds: string[] }> {
   if (typeof window === "undefined" || !navigator.onLine) {
     return { syncedBookIds: [] };
   }
 
-  const [syncedBookIds] = await Promise.all([
-    syncPendingUploads().catch((e) => {
-      console.warn("syncPendingUploads error:", e);
-      return [] as string[];
-    }),
-    flushUnsyncedProgress().catch((e) => console.warn("flushUnsyncedProgress error:", e)),
-  ]);
+  // 必須先將待上傳的小說同步建立至伺服器，再同步進度，避免書籍尚未寫入觸發外鍵約束異常
+  const syncedBookIds = await syncPendingUploads().catch((e) => {
+    console.warn("syncPendingUploads error:", e);
+    return [] as string[];
+  });
+
+  await flushUnsyncedProgress().catch((e) => console.warn("flushUnsyncedProgress error:", e));
 
   return { syncedBookIds };
 }

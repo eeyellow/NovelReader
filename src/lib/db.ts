@@ -462,12 +462,34 @@ export const ProgressModel = {
     userId: string = "default_user"
   ): { updated: boolean; currentProgress: ReadingProgress } {
     const db = getDb();
-    const existing = this.get(bookId, userId);
     const now = clientUpdatedAt || new Date().toISOString();
     const chIdx = extra?.chapter_index ?? null;
     const pIdx = extra?.page_index ?? null;
     const pRatio = extra?.page_ratio ?? null;
     const totPages = extra?.total_pages ?? null;
+
+    // 確保書籍存在於 books 資料表，防禦性避免 SQLite FOREIGN KEY 外鍵約束拋出異常
+    const book = BookModel.getById(bookId);
+    if (!book) {
+      console.warn(`[ProgressModel] 跳過進度儲存：伺服器資料庫不存在書籍 ID "${bookId}"`);
+      return {
+        updated: false,
+        currentProgress: {
+          user_id: userId,
+          book_id: bookId,
+          char_offset: charOffset,
+          percentage,
+          device_name: deviceName,
+          updated_at: now,
+          chapter_index: chIdx ?? undefined,
+          page_index: pIdx ?? undefined,
+          page_ratio: pRatio ?? undefined,
+          total_pages: totPages ?? undefined,
+        },
+      };
+    }
+
+    const existing = this.get(bookId, userId);
 
     if (existing) {
       const existingTime = new Date(existing.updated_at).getTime();
@@ -552,6 +574,12 @@ export const BookmarkModel = {
     user_id?: string;
   }) {
     const db = getDb();
+    const book = BookModel.getById(bookmark.book_id);
+    if (!book) {
+      console.warn(`[BookmarkModel] 跳過書籤儲存：伺服器資料庫不存在書籍 ID "${bookmark.book_id}"`);
+      return null;
+    }
+
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO bookmarks (id, user_id, book_id, char_offset, title, preview_text)
       VALUES (@id, @user_id, @book_id, @char_offset, @title, @preview_text)

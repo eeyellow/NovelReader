@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ProgressModel } from "@/lib/db";
+import { BookModel, ProgressModel } from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -63,6 +63,19 @@ export async function POST(req: NextRequest) {
 
     const session = getSessionFromRequest(req);
     const userId = session?.id || body.user_id || "default_user";
+
+    // 檢查目標書籍是否存在於伺服器資料庫，防止觸發 SQLite 外鍵約束錯誤 (FOREIGN KEY constraint failed)
+    const book = BookModel.getById(book_id);
+    if (!book) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Book "${book_id}" not found on server`,
+          bookNotFound: true,
+        },
+        { status: 404 }
+      );
+    }
 
     const result = ProgressModel.upsert(
       book_id,
