@@ -79,6 +79,7 @@ export function useReaderPagination({
   currentChapterIdxRef.current = currentChapterIdx;
   const currentOffsetRef = useRef(currentOffset);
   currentOffsetRef.current = currentOffset;
+  const lastSyncedChapterIdxRef = useRef<number>(currentChapterIdx);
 
   // 章節切換 Toast 提示
   const notifyChapterSwitch = useCallback(
@@ -273,7 +274,7 @@ export function useReaderPagination({
     return () => observer.disconnect();
   }, [measurePagination]);
 
-  // 當翻頁時計算當前 offset 並回傳進度
+  // 當翻頁或章節切換完成時計算當前 offset 並回傳進度
   useEffect(() => {
     if (
       isRestoringProgress.current ||
@@ -292,7 +293,14 @@ export function useReaderPagination({
 
     setCurrentOffset(calculatedOffset);
     const percentage = Number(((calculatedOffset / totalChars) * 100).toFixed(2));
-    syncProgress(bookId, calculatedOffset, percentage, false, {
+
+    // 當章節索引變更（切換至新章節並就緒）時，立即強制向雲端同步新章節進度！
+    const isChapterChanged = lastSyncedChapterIdxRef.current !== currentChapterIdx;
+    if (isChapterChanged) {
+      lastSyncedChapterIdxRef.current = currentChapterIdx;
+    }
+
+    syncProgress(bookId, calculatedOffset, percentage, isChapterChanged, {
       chapter_index: currentChapterIdx,
       page_index: currentPage,
       page_ratio: pageRatio,
@@ -300,9 +308,9 @@ export function useReaderPagination({
     });
   }, [bookId, currentChapter, currentChapterIdx, currentPage, totalPages, totalChars]);
 
-  // 主動觸發進度雲端同步（僅用於章節變更、離線背景生命週期事件與重要里程碑）
+  // 主動觸發進度雲端同步（用於生命週期事件、返回書架、跳轉等重要節點）
   const syncCurrentProgressToServer = useCallback(() => {
-    if (isRestoringProgress.current || !bookId || !currentChapterRef.current || !totalChars) return;
+    if (!bookId || !totalChars) return;
     const curOffset = currentOffsetRef.current;
     const curPage = currentPageRef.current;
     const totPages = totalPagesRef.current;
@@ -317,22 +325,31 @@ export function useReaderPagination({
     });
   }, [bookId, totalChars]);
 
-  // Page Visibility API、Pagehide 與 Beforeunload 進度儲存監聽
+  // Page Visibility API、Pagehide、Beforeunload 與組件卸載進度儲存監聽
   useEffect(() => {
     if (!bookId) return;
 
-    const handleSyncOnClose = () => {
+    const handleVisibilityChange = () => {
+      // 僅在退至後台或切換視窗 (hidden) 時觸發同步
+      if (document.visibilityState === "hidden") {
+        syncCurrentProgressToServer();
+      }
+    };
+
+    const handlePageHide = () => {
       syncCurrentProgressToServer();
     };
 
-    document.addEventListener("visibilitychange", handleSyncOnClose);
-    window.addEventListener("pagehide", handleSyncOnClose);
-    window.addEventListener("beforeunload", handleSyncOnClose);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handlePageHide);
 
     return () => {
-      document.removeEventListener("visibilitychange", handleSyncOnClose);
-      window.removeEventListener("pagehide", handleSyncOnClose);
-      window.removeEventListener("beforeunload", handleSyncOnClose);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handlePageHide);
+      // 組件卸載時（如 Next.js 路由切換離開閱讀器），確保強制觸發一次同步
+      syncCurrentProgressToServer();
     };
   }, [bookId, syncCurrentProgressToServer]);
 
@@ -521,6 +538,7 @@ export function useReaderPagination({
     jumpToChapter,
     handleContinuousScroll,
     jumpToOffset,
+    syncCurrentProgressToServer,
     scrubTargetInfo,
   };
 }

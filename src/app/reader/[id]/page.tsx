@@ -398,8 +398,9 @@ export default function ReaderPage() {
   }, [bookId]);
 
   const handleBackToShelf = useCallback(() => {
+    pagination.syncCurrentProgressToServer();
     router.push("/?from=reader");
-  }, [router]);
+  }, [pagination, router]);
 
   // 全螢幕切換
   const toggleFullscreen = useCallback(() => {

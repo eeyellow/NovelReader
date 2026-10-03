@@ -23,33 +23,40 @@ export async function sendProgressToServer(
 ): Promise<{ success: boolean; currentProgress?: any }> {
   const jsonString = JSON.stringify(payload);
 
-  if (useBeacon && typeof navigator !== "undefined" && navigator.sendBeacon) {
+  // 1. 優先使用標準 fetch + keepalive: true（相容性最高、保證在跳轉或背景時仍完成傳輸，且在 DevTools Fetch/XHR 清晰可查）
+  if (typeof fetch !== "undefined") {
     try {
-      const blob = new Blob([jsonString], { type: "application/json" });
+      const res = await fetch("/api/progress", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: jsonString,
+        keepalive: true,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data;
+      }
+    } catch (error) {
+      console.warn("fetch with keepalive failed, trying sendBeacon fallback", error);
+    }
+  }
+
+  // 2. Fallback to sendBeacon（使用 text/plain;charset=UTF-8 確保 WebKit/Safari 不會因非 safe-listed MIME type 靜默丟棄）
+  if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([jsonString], { type: "text/plain;charset=UTF-8" });
       const queued = navigator.sendBeacon("/api/progress", blob);
       if (queued) {
         return { success: true };
       }
     } catch (e) {
-      console.warn("sendBeacon failed, falling back to fetch", e);
+      console.warn("sendBeacon fallback failed", e);
     }
   }
 
-  try {
-    const res = await fetch("/api/progress", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: jsonString,
-      keepalive: true,
-    });
-    const data = await res.json();
-    return data;
-  } catch (error) {
-    // Offline or network error - local progress is already saved
-    return { success: false };
-  }
+  return { success: false };
 }
 
 export function syncProgress(
