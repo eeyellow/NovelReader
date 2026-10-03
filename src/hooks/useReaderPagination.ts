@@ -300,28 +300,29 @@ export function useReaderPagination({
     });
   }, [bookId, currentChapter, currentChapterIdx, currentPage, totalPages, totalChars]);
 
+  // 主動觸發進度雲端同步（僅用於章節變更、離線背景生命週期事件與重要里程碑）
+  const syncCurrentProgressToServer = useCallback(() => {
+    if (isRestoringProgress.current || !bookId || !currentChapterRef.current || !totalChars) return;
+    const curOffset = currentOffsetRef.current;
+    const curPage = currentPageRef.current;
+    const totPages = totalPagesRef.current;
+    const curChIdx = currentChapterIdxRef.current;
+    const pageRatio = totPages > 0 ? curPage / totPages : 0;
+    const percentage = Number(((curOffset / totalChars) * 100).toFixed(2));
+    syncProgress(bookId, curOffset, percentage, true, {
+      chapter_index: curChIdx,
+      page_index: curPage,
+      page_ratio: pageRatio,
+      total_pages: totPages,
+    });
+  }, [bookId, totalChars]);
+
   // Page Visibility API、Pagehide 與 Beforeunload 進度儲存監聽
   useEffect(() => {
     if (!bookId) return;
 
     const handleSyncOnClose = () => {
-      // 正在復原進度時不覆蓋已有進度
-      if (isRestoringProgress.current) return;
-
-      if (totalChars > 0 && currentChapterRef.current) {
-        const curOffset = currentOffsetRef.current;
-        const curPage = currentPageRef.current;
-        const totPages = totalPagesRef.current;
-        const curChIdx = currentChapterIdxRef.current;
-        const pageRatio = totPages > 0 ? curPage / totPages : 0;
-        const percentage = Number(((curOffset / totalChars) * 100).toFixed(2));
-        syncProgress(bookId, curOffset, percentage, true, {
-          chapter_index: curChIdx,
-          page_index: curPage,
-          page_ratio: pageRatio,
-          total_pages: totPages,
-        });
-      }
+      syncCurrentProgressToServer();
     };
 
     document.addEventListener("visibilitychange", handleSyncOnClose);
@@ -333,7 +334,7 @@ export function useReaderPagination({
       window.removeEventListener("pagehide", handleSyncOnClose);
       window.removeEventListener("beforeunload", handleSyncOnClose);
     };
-  }, [bookId, totalChars]);
+  }, [bookId, syncCurrentProgressToServer]);
 
   // 翻頁導航方法
   const goToNextPage = useCallback(() => {
@@ -345,8 +346,9 @@ export function useReaderPagination({
       const nextIdx = currentChapterIdx + 1;
       setCurrentChapterIdx(nextIdx);
       notifyChapterSwitch(nextIdx);
+      syncCurrentProgressToServer();
     }
-  }, [currentPage, totalPages, currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx]);
+  }, [currentPage, totalPages, currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
 
   const goToPrevPage = useCallback(() => {
     if (currentPage > 0) {
@@ -357,8 +359,9 @@ export function useReaderPagination({
       const prevIdx = currentChapterIdx - 1;
       setCurrentChapterIdx(prevIdx);
       notifyChapterSwitch(prevIdx);
+      syncCurrentProgressToServer();
     }
-  }, [currentPage, currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx]);
+  }, [currentPage, currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
 
   const goToNextChapter = useCallback(() => {
     if (currentChapterIdx < chapters.length - 1) {
@@ -367,8 +370,9 @@ export function useReaderPagination({
       const nextIdx = currentChapterIdx + 1;
       setCurrentChapterIdx(nextIdx);
       notifyChapterSwitch(nextIdx);
+      syncCurrentProgressToServer();
     }
-  }, [currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx]);
+  }, [currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
 
   const goToPrevChapter = useCallback(() => {
     if (currentChapterIdx > 0) {
@@ -377,15 +381,17 @@ export function useReaderPagination({
       const prevIdx = currentChapterIdx - 1;
       setCurrentChapterIdx(prevIdx);
       notifyChapterSwitch(prevIdx);
+      syncCurrentProgressToServer();
     }
-  }, [currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx]);
+  }, [currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
 
   const goToFirstPage = useCallback(() => {
     pendingPageRef.current = "first";
     isRestoringProgress.current = false;
     setCurrentChapterIdx(0);
     notifyChapterSwitch(0);
-  }, [notifyChapterSwitch, setCurrentChapterIdx]);
+    syncCurrentProgressToServer();
+  }, [notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
 
   const goToLastPage = useCallback(() => {
     if (chapters.length > 0) {
@@ -394,8 +400,9 @@ export function useReaderPagination({
       isRestoringProgress.current = false;
       setCurrentChapterIdx(lastIdx);
       notifyChapterSwitch(lastIdx);
+      syncCurrentProgressToServer();
     }
-  }, [chapters.length, notifyChapterSwitch, setCurrentChapterIdx]);
+  }, [chapters.length, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
 
   const jumpToChapter = useCallback(
     (chapter: Chapter) => {
@@ -405,9 +412,10 @@ export function useReaderPagination({
         pendingPageRef.current = "first";
         isRestoringProgress.current = false;
         setCurrentChapterIdx(chapter.index);
+        syncCurrentProgressToServer();
       }
     },
-    [currentChapterIdx, setCurrentChapterIdx]
+    [currentChapterIdx, setCurrentChapterIdx, syncCurrentProgressToServer]
   );
 
   // 連續滾動事件處理

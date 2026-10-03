@@ -15,7 +15,6 @@ interface SyncPayload {
   updated_at: string;
 }
 
-let syncTimeout: NodeJS.Timeout | null = null;
 let lastSyncedOffset = -1;
 
 export async function sendProgressToServer(
@@ -100,37 +99,28 @@ export function syncProgress(
     updated_at: timestamp,
   };
 
-  // 2. Clear previous debounce timeout
-  if (syncTimeout) {
-    clearTimeout(syncTimeout);
-    syncTimeout = null;
-  }
-
+  // 2. 僅在生命週期事件（切換章節、離開視窗、返回書架）要求即時同步時才發送網路請求
+  // 平時翻頁純寫入 IndexedDB，完全不啟動背景計時器，達成 0% 射頻晶片喚醒與零耗電
   if (forceImmediate) {
-    sendProgressToServer(payload, true);
+    sendProgressToServer(payload, true)
+      .then((result) => {
+        if (result && result.success) {
+          lastSyncedOffset = charOffset;
+          LocalStore.saveLocalProgress(
+            bookId,
+            charOffset,
+            percentage,
+            deviceName,
+            true,
+            timestamp,
+            extra,
+            currentUserId
+          );
+        }
+      })
+      .catch(() => {});
     lastSyncedOffset = charOffset;
-    return;
   }
-
-  // 3. Debounce background sync (3 seconds) to reduce radio wakeups
-  syncTimeout = setTimeout(async () => {
-    if (Math.abs(charOffset - lastSyncedOffset) > 10) {
-      const result = await sendProgressToServer(payload, false);
-      if (result.success) {
-        lastSyncedOffset = charOffset;
-        LocalStore.saveLocalProgress(
-          bookId,
-          charOffset,
-          percentage,
-          deviceName,
-          true,
-          timestamp,
-          extra,
-          currentUserId
-        );
-      }
-    }
-  }, 3000);
 }
 
 /**
