@@ -56,7 +56,7 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
 }) => {
   return (
     <footer
-      className={`fixed bottom-0 inset-x-0 z-40 transition-transform duration-300 backdrop-blur-md bg-[var(--header-bg)] border-t border-[var(--border-color)] px-4 py-2.5 safe-area-bottom shadow-lg ${
+      className={`fixed bottom-0 inset-x-0 z-40 transition-transform duration-300 bg-[var(--card-bg)] border-t border-[var(--border-color)] px-4 py-2.5 safe-area-bottom shadow-lg ${
         showToolbar ? "translate-y-0" : "translate-y-full"
       }`}
     >

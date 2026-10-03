@@ -56,7 +56,7 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
 }) => {
   return (
     <header
-      className={`fixed top-0 inset-x-0 z-40 transition-transform duration-300 backdrop-blur-md bg-[var(--header-bg)] border-b border-[var(--border-color)] px-4 py-2.5 safe-area-top flex items-center justify-between shadow-sm ${
+      className={`fixed top-0 inset-x-0 z-40 transition-transform duration-300 bg-[var(--card-bg)] border-b border-[var(--border-color)] px-4 py-2.5 safe-area-top flex items-center justify-between shadow-sm ${
         showToolbar ? "translate-y-0" : "-translate-y-full"
       }`}
     >

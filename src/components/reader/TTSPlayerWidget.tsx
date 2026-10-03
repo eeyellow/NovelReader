@@ -36,7 +36,7 @@ export const TTSPlayerWidget: React.FC<TTSPlayerWidgetProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed bottom-20 inset-x-4 sm:inset-x-auto sm:right-6 z-40 max-w-sm bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl p-3.5 shadow-2xl backdrop-blur-md animate-fade-in space-y-2.5">
+    <div className="fixed bottom-20 inset-x-4 sm:inset-x-auto sm:right-6 z-40 max-w-sm bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl p-3.5 shadow-2xl animate-fade-in space-y-2.5">
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-2">
           <div className="p-1.5 rounded-lg bg-[var(--accent-color)]/15 text-[var(--accent-color)]">
