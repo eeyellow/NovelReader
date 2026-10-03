@@ -183,17 +183,33 @@ export default function ReaderPage() {
 
       if (progRes.ok) {
         const progData = await progRes.json();
-        if (progData.success && progData.progress) {
+        if (progData.success) {
           const sProg = progData.progress;
-          const sTime = parseSafeTime(sProg.updated_at);
-          const lTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
+          if (sProg) {
+            const sTime = parseSafeTime(sProg.updated_at);
+            const lTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
 
-          if (sTime > lTime + 3000 && Math.abs(sProg.char_offset - targetOffset) > 300) {
-            pagination.setConflictPrompt({
-              serverOffset: sProg.char_offset,
-              serverPercentage: sProg.percentage,
-              deviceName: sProg.device_name || "其他裝置",
-            });
+            if (sTime > lTime + 3000 && Math.abs(sProg.char_offset - targetOffset) > 300) {
+              pagination.setConflictPrompt({
+                serverOffset: sProg.char_offset,
+                serverPercentage: sProg.percentage,
+                deviceName: sProg.device_name || "其他裝置",
+              });
+            }
+          } else if (localProg && localProg.char_offset > 0) {
+            // 伺服器端尚無此書籍進度，而客戶端本機已有進度，主動將本機閱讀進度補同步至伺服器資料庫
+            syncProgress(
+              bookId,
+              localProg.char_offset,
+              localProg.percentage || 0,
+              true,
+              {
+                chapter_index: localProg.chapter_index,
+                page_index: localProg.page_index,
+                page_ratio: localProg.page_ratio,
+                total_pages: localProg.total_pages,
+              }
+            );
           }
         }
       }

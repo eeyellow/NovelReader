@@ -15,7 +15,9 @@ interface SyncPayload {
   updated_at: string;
 }
 
+let syncTimeout: any = null;
 let lastSyncedOffset = -1;
+let lastSyncedBookId = "";
 
 export async function sendProgressToServer(
   payload: SyncPayload,
@@ -106,13 +108,19 @@ export function syncProgress(
     updated_at: timestamp,
   };
 
-  // 2. 僅在生命週期事件（切換章節、離開視窗、返回書架）要求即時同步時才發送網路請求
-  // 平時翻頁純寫入 IndexedDB，完全不啟動背景計時器，達成 0% 射頻晶片喚醒與零耗電
+  // 2. 清除既有的防抖計時器
+  if (syncTimeout) {
+    clearTimeout(syncTimeout);
+    syncTimeout = null;
+  }
+
+  // 3. 強制即時同步（生命週期事件、切換章節、返回書架）
   if (forceImmediate) {
+    lastSyncedOffset = charOffset;
+    lastSyncedBookId = bookId;
     sendProgressToServer(payload, true)
       .then((result) => {
         if (result && result.success) {
-          lastSyncedOffset = charOffset;
           LocalStore.saveLocalProgress(
             bookId,
             charOffset,
@@ -126,8 +134,31 @@ export function syncProgress(
         }
       })
       .catch(() => {});
-    lastSyncedOffset = charOffset;
+    return;
   }
+
+  // 4. 平時閱讀翻頁防抖（停止翻頁 3 秒後自動向雲端同步）
+  // 注意：此計時器只在使用者翻頁時單次觸發，發送後即銷毀，閒置時完全零背景計時器，兼顧極致省電與進度可靠
+  syncTimeout = setTimeout(async () => {
+    syncTimeout = null;
+    if (lastSyncedBookId !== bookId || Math.abs(charOffset - lastSyncedOffset) > 10) {
+      const result = await sendProgressToServer(payload, false);
+      if (result && result.success) {
+        lastSyncedOffset = charOffset;
+        lastSyncedBookId = bookId;
+        LocalStore.saveLocalProgress(
+          bookId,
+          charOffset,
+          percentage,
+          deviceName,
+          true,
+          timestamp,
+          extra,
+          currentUserId
+        );
+      }
+    }
+  }, 3000);
 }
 
 /**
