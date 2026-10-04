@@ -35,11 +35,15 @@ export async function POST(req: NextRequest) {
     const contentType = req.headers.get("content-type") || "";
 
     if (contentType.includes("application/json")) {
-      body = await req.json();
+      body = await req.json().catch(() => ({}));
     } else {
       // Handle sendBeacon plain text JSON payload
-      const text = await req.text();
-      body = JSON.parse(text);
+      const text = await req.text().catch(() => "");
+      try {
+        body = text ? JSON.parse(text) : {};
+      } catch {
+        body = {};
+      }
     }
 
     const {

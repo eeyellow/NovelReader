@@ -12,7 +12,7 @@ interface ReaderToastsProps {
   chapterSwitchToast: string | null;
   conflictPrompt: ConflictPromptData | null;
   onDismissConflict: () => void;
-  onAcceptConflict: (serverOffset: number) => void;
+  onAcceptConflict: (conflict: ConflictPromptData) => void;
 }
 
 export const ReaderToasts: React.FC<ReaderToastsProps> = ({
@@ -68,7 +68,7 @@ export const ReaderToasts: React.FC<ReaderToastsProps> = ({
               保留目前位置
             </button>
             <button
-              onClick={() => onAcceptConflict(conflictPrompt.serverOffset)}
+              onClick={() => onAcceptConflict(conflictPrompt)}
               className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-[var(--accent-color)] text-white shadow-sm hover:opacity-90"
             >
               立刻跳轉同步

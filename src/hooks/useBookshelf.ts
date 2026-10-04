@@ -103,7 +103,28 @@ export function useBookshelf() {
       }
 
       const prog = await LocalStore.getLocalProgress(book.id, userId || "default_user");
-      if (prog) {
+      const serverTime = parseSafeTime(book.progress_updated_at);
+      const localTime = prog ? parseSafeTime(prog.updated_at) : 0;
+
+      if (serverTime > localTime && typeof book.char_offset === "number") {
+        await LocalStore.applyServerProgress(
+          book.id,
+          {
+            char_offset: book.char_offset,
+            percentage: book.percentage || 0,
+            device_name: book.last_device || "雲端同步",
+            updated_at: book.progress_updated_at!,
+          },
+          userId
+        );
+        progMap[book.id] = {
+          char_offset: book.char_offset,
+          percentage: book.percentage || 0,
+          device_name: book.last_device || "雲端同步",
+          updated_at: book.progress_updated_at,
+          synced: true,
+        };
+      } else if (prog) {
         progMap[book.id] = prog;
       }
     }

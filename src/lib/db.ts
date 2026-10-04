@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
+import { parseSafeTime } from "./format";
 
 // Define storage directory: can be overridden via DATA_DIR environment variable (e.g. for Docker / NAS mount)
 function resolveDataDir(): string {
@@ -492,10 +493,10 @@ export const ProgressModel = {
     const existing = this.get(bookId, userId);
 
     if (existing) {
-      const existingTime = new Date(existing.updated_at).getTime();
-      const clientTime = new Date(now).getTime();
+      const existingTime = parseSafeTime(existing.updated_at);
+      const clientTime = parseSafeTime(now);
 
-      // LWW: If incoming progress is newer or equal
+      // LWW: If incoming progress is newer or equal (容許 1 秒以內的網路時鐘誤差)
       if (clientTime >= existingTime - 1000) {
         const stmt = db.prepare(`
           UPDATE reading_progress

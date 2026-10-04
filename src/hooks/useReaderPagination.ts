@@ -5,7 +5,7 @@
 
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import { Chapter, findCurrentChapter } from "@/lib/parser";
-import { syncProgress } from "@/lib/sync";
+import { syncProgress, flushPendingProgress, beaconPendingProgress } from "@/lib/sync";
 import { ScrubberMode, ConflictPromptData } from "@/types/reader";
 
 interface UseReaderPaginationOptions {
@@ -280,7 +280,8 @@ export function useReaderPagination({
       isRestoringProgress.current ||
       pendingTargetOffset.current !== null ||
       pendingTargetPageIndex.current !== null ||
-      pendingTargetPageRatio.current !== null
+      pendingTargetPageRatio.current !== null ||
+      pendingPageRef.current !== null
     ) {
       return;
     }
@@ -308,50 +309,18 @@ export function useReaderPagination({
     });
   }, [bookId, currentChapter, currentChapterIdx, currentPage, totalPages, totalChars]);
 
-  // 主動觸發進度雲端同步（用於生命週期事件、返回書架、跳轉等重要節點）
+  // 主動觸發進度雲端同步（用於返回書架、跳轉等重要節點，不重新產生時間戳）
   const syncCurrentProgressToServer = useCallback(() => {
-    if (!bookId || !totalChars) return;
-    const curOffset = currentOffsetRef.current;
-    const curPage = currentPageRef.current;
-    const totPages = totalPagesRef.current;
-    const curChIdx = currentChapterIdxRef.current;
-    const pageRatio = totPages > 0 ? curPage / totPages : 0;
-    const percentage = Number(((curOffset / totalChars) * 100).toFixed(2));
-    syncProgress(bookId, curOffset, percentage, true, {
-      chapter_index: curChIdx,
-      page_index: curPage,
-      page_ratio: pageRatio,
-      total_pages: totPages,
-    });
-  }, [bookId, totalChars]);
+    flushPendingProgress().catch(console.warn);
+  }, []);
 
-  // Page Visibility API、Pagehide、Beforeunload 與組件卸載進度儲存監聽
+  // 組件卸載時，確保待同步佇列立即送出
   useEffect(() => {
-    if (!bookId) return;
-
-    const handleVisibilityChange = () => {
-      // 僅在退至後台或切換視窗 (hidden) 時觸發同步
-      if (document.visibilityState === "hidden") {
-        syncCurrentProgressToServer();
-      }
-    };
-
-    const handlePageHide = () => {
-      syncCurrentProgressToServer();
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("pagehide", handlePageHide);
-    window.addEventListener("beforeunload", handlePageHide);
-
     return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("pagehide", handlePageHide);
-      window.removeEventListener("beforeunload", handlePageHide);
-      // 組件卸載時（如 Next.js 路由切換離開閱讀器），確保強制觸發一次同步
-      syncCurrentProgressToServer();
+      beaconPendingProgress();
+      flushPendingProgress().catch(() => {});
     };
-  }, [bookId, syncCurrentProgressToServer]);
+  }, []);
 
   // 翻頁導航方法
   const goToNextPage = useCallback(() => {
@@ -363,9 +332,8 @@ export function useReaderPagination({
       const nextIdx = currentChapterIdx + 1;
       setCurrentChapterIdx(nextIdx);
       notifyChapterSwitch(nextIdx);
-      syncCurrentProgressToServer();
     }
-  }, [currentPage, totalPages, currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
+  }, [currentPage, totalPages, currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx]);
 
   const goToPrevPage = useCallback(() => {
     if (currentPage > 0) {
@@ -376,9 +344,8 @@ export function useReaderPagination({
       const prevIdx = currentChapterIdx - 1;
       setCurrentChapterIdx(prevIdx);
       notifyChapterSwitch(prevIdx);
-      syncCurrentProgressToServer();
     }
-  }, [currentPage, currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
+  }, [currentPage, currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx]);
 
   const goToNextChapter = useCallback(() => {
     if (currentChapterIdx < chapters.length - 1) {
@@ -387,9 +354,8 @@ export function useReaderPagination({
       const nextIdx = currentChapterIdx + 1;
       setCurrentChapterIdx(nextIdx);
       notifyChapterSwitch(nextIdx);
-      syncCurrentProgressToServer();
     }
-  }, [currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
+  }, [currentChapterIdx, chapters.length, notifyChapterSwitch, setCurrentChapterIdx]);
 
   const goToPrevChapter = useCallback(() => {
     if (currentChapterIdx > 0) {
@@ -398,17 +364,15 @@ export function useReaderPagination({
       const prevIdx = currentChapterIdx - 1;
       setCurrentChapterIdx(prevIdx);
       notifyChapterSwitch(prevIdx);
-      syncCurrentProgressToServer();
     }
-  }, [currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
+  }, [currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx]);
 
   const goToFirstPage = useCallback(() => {
     pendingPageRef.current = "first";
     isRestoringProgress.current = false;
     setCurrentChapterIdx(0);
     notifyChapterSwitch(0);
-    syncCurrentProgressToServer();
-  }, [notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
+  }, [notifyChapterSwitch, setCurrentChapterIdx]);
 
   const goToLastPage = useCallback(() => {
     if (chapters.length > 0) {
@@ -417,9 +381,8 @@ export function useReaderPagination({
       isRestoringProgress.current = false;
       setCurrentChapterIdx(lastIdx);
       notifyChapterSwitch(lastIdx);
-      syncCurrentProgressToServer();
     }
-  }, [chapters.length, notifyChapterSwitch, setCurrentChapterIdx, syncCurrentProgressToServer]);
+  }, [chapters.length, notifyChapterSwitch, setCurrentChapterIdx]);
 
   const jumpToChapter = useCallback(
     (chapter: Chapter) => {
@@ -429,10 +392,9 @@ export function useReaderPagination({
         pendingPageRef.current = "first";
         isRestoringProgress.current = false;
         setCurrentChapterIdx(chapter.index);
-        syncCurrentProgressToServer();
       }
     },
-    [currentChapterIdx, setCurrentChapterIdx, syncCurrentProgressToServer]
+    [currentChapterIdx, setCurrentChapterIdx]
   );
 
   // 連續滾動事件處理

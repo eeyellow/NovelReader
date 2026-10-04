@@ -1,204 +1,359 @@
-import { LocalStore } from "./idb";
+import { LocalStore, getProgressKey, type LocalProgressRecord } from "./idb";
 import { getDeviceName } from "./device";
 import { getCachedUserId } from "./clientAuth";
 
-interface SyncPayload {
-  book_id: string;
-  user_id?: string;
-  char_offset: number;
-  percentage: number;
+/**
+ * 閱讀進度同步引擎
+ *
+ * 設計原則：
+ * 1. updated_at 代表「使用者真正移動到這個位置的時間」，只在翻頁/跳轉時產生；
+ *    生命週期事件（退背景、關閉、返回書架、恢復連線）只負責把「尚未被伺服器確認」的進度送出，
+ *    絕不重新蓋時間戳，避免閒置裝置用舊位置覆蓋其他裝置較新的進度。
+ * 2. 退到背景/關閉時只用 sendBeacon（同步排入瀏覽器佇列，頁面凍結後仍會送出）；
+ *    beacon 無法得知結果，因此不視為成功，回到前景時再以 fetch 補送確認（伺服器 LWW 保證冪等）。
+ * 3. 只有伺服器明確回應 success 才標記 synced，且需比對 updated_at，避免把較新的未上傳進度誤標。
+ */
+
+export interface ProgressExtra {
   chapter_index?: number;
   page_index?: number;
   page_ratio?: number;
   total_pages?: number;
+}
+
+export interface SyncPayload extends ProgressExtra {
+  book_id: string;
+  user_id?: string;
+  char_offset: number;
+  percentage: number;
   device_name: string;
   updated_at: string;
 }
 
-let syncTimeout: any = null;
-let lastSyncedOffset = -1;
-let lastSyncedBookId = "";
+export interface ServerProgress {
+  book_id: string;
+  user_id?: string;
+  char_offset: number;
+  percentage: number;
+  device_name?: string;
+  updated_at: string;
+  chapter_index?: number | null;
+  page_index?: number | null;
+  page_ratio?: number | null;
+  total_pages?: number | null;
+}
+
+export interface SendResult {
+  /** 伺服器明確回應成功 */
+  success: boolean;
+  /** 已交給 sendBeacon / keepalive，但無法確認結果 */
+  queued?: boolean;
+  /** false 代表伺服器已有更新的進度（LWW 拒絕寫入） */
+  updated?: boolean;
+  currentProgress?: ServerProgress;
+  bookNotFound?: boolean;
+  /** 被反向代理（如 Cloudflare Access）重導或拒絕，通常是登入憑證過期 */
+  authExpired?: boolean;
+}
+
+export type SendMode = "foreground" | "background";
+
+export const PROGRESS_CONFLICT_EVENT = "novel_reader_progress_conflict";
+export const SYNC_AUTH_EXPIRED_EVENT = "novel_reader_sync_auth_expired";
+
+const PROGRESS_ENDPOINT = "/api/progress";
+const DEBOUNCE_MS = 3000;
+const FOREGROUND_TIMEOUT_MS = 10000;
+
+/** 尚未被伺服器確認的最新進度（key: `${userId}:${bookId}`） */
+const pendingPayloads = new Map<string, SyncPayload>();
+/** 已用 sendBeacon 送出的 updated_at，避免 visibilitychange + pagehide 連續觸發時重複送 */
+const beaconedAt = new Map<string, string>();
+
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let flushPendingPromise: Promise<void> | null = null;
+let flushUnsyncedPromise: Promise<void> | null = null;
+
+function clearDebounce() {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+}
+
+function isOnline() {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+function emit(name: string, detail?: unknown) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+/**
+ * 背景/關閉專用：同步呼叫 sendBeacon（必須在事件處理器內同步執行，不能有任何 await）
+ */
+function sendInBackground(json: string): boolean {
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    try {
+      // text/plain 屬於 CORS safelisted MIME，WebKit 不會因需要 preflight 而靜默丟棄
+      const blob = new Blob([json], { type: "text/plain;charset=UTF-8" });
+      if (navigator.sendBeacon(PROGRESS_ENDPOINT, blob)) return true;
+    } catch (e) {}
+  }
+  if (typeof fetch !== "undefined") {
+    try {
+      fetch(PROGRESS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json,
+        keepalive: true,
+        credentials: "same-origin",
+      }).catch(() => {});
+      return true;
+    } catch (e) {}
+  }
+  return false;
+}
 
 export async function sendProgressToServer(
   payload: SyncPayload,
-  useBeacon: boolean = false
-): Promise<{ success: boolean; currentProgress?: any }> {
-  const jsonString = JSON.stringify(payload);
+  mode: SendMode = "foreground"
+): Promise<SendResult> {
+  const json = JSON.stringify(payload);
 
-  // 1. 優先使用標準 fetch + keepalive: true（相容性最高、保證在跳轉或背景時仍完成傳輸，且在 DevTools Fetch/XHR 清晰可查）
-  if (typeof fetch !== "undefined") {
-    try {
-      const res = await fetch("/api/progress", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: jsonString,
-        keepalive: true,
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return data;
-      }
-    } catch (error) {
-      console.warn("fetch with keepalive failed, trying sendBeacon fallback", error);
-    }
+  if (mode === "background") {
+    return { success: false, queued: sendInBackground(json) };
   }
 
-  // 2. Fallback to sendBeacon（使用 text/plain;charset=UTF-8 確保 WebKit/Safari 不會因非 safe-listed MIME type 靜默丟棄）
-  if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-    try {
-      const blob = new Blob([jsonString], { type: "text/plain;charset=UTF-8" });
-      const queued = navigator.sendBeacon("/api/progress", blob);
-      if (queued) {
-        return { success: true };
-      }
-    } catch (e) {
-      console.warn("sendBeacon fallback failed", e);
-    }
-  }
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), FOREGROUND_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(PROGRESS_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: json,
+      keepalive: true,
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "manual",
+      signal: controller?.signal,
+    });
 
-  return { success: false };
+    if (
+      res.type === "opaqueredirect" ||
+      (res.status >= 300 && res.status < 400) ||
+      res.status === 401 ||
+      res.status === 403
+    ) {
+      return { success: false, authExpired: true };
+    }
+
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.success) {
+      return {
+        success: true,
+        updated: data.updated !== false,
+        currentProgress: data.currentProgress,
+      };
+    }
+    if (res.status === 404 && data?.bookNotFound) {
+      return { success: false, bookNotFound: true };
+    }
+    return { success: false };
+  } catch (e) {
+    // 網路錯誤 / 逾時：保持 unsynced，等待下次 visible / online / 啟動時補送
+    return { success: false };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
+async function applySendResult(progressKey: string, payload: SyncPayload, result: SendResult) {
+  if (result.success) {
+    const pending = pendingPayloads.get(progressKey);
+    if (pending && pending.updated_at === payload.updated_at) {
+      pendingPayloads.delete(progressKey);
+      beaconedAt.delete(progressKey);
+    }
+    await LocalStore.markProgressSynced(progressKey, payload.updated_at).catch(() => {});
+    if (result.updated === false && result.currentProgress) {
+      emit(PROGRESS_CONFLICT_EVENT, result.currentProgress);
+    }
+  } else if (result.authExpired) {
+    emit(SYNC_AUTH_EXPIRED_EVENT);
+  }
+}
+
+/**
+ * 記錄一次「使用者真正移動位置」的進度：立即寫入本機，並排程上傳
+ * 注意：只應在翻頁、切章、跳轉等使用者操作後呼叫，不要在生命週期事件中呼叫
+ */
 export function syncProgress(
   bookId: string,
   charOffset: number,
   percentage: number,
   forceImmediate: boolean = false,
-  extra?: {
-    chapter_index?: number;
-    page_index?: number;
-    page_ratio?: number;
-    total_pages?: number;
-  }
+  extra?: ProgressExtra
 ) {
   if (typeof window === "undefined" || !bookId) return;
 
   const deviceName = getDeviceName();
-  const timestamp = new Date().toISOString();
-  const currentUserId = getCachedUserId();
-
-  // 1. Save to local IndexedDB and localStorage immediately with user isolation
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem("novel_reader_last_book_id", bookId);
-  }
-
-  LocalStore.saveLocalProgress(
-    bookId,
-    charOffset,
-    percentage,
-    deviceName,
-    false,
-    timestamp,
-    extra,
-    currentUserId
-  );
-
+  const userId = getCachedUserId();
   const payload: SyncPayload = {
     book_id: bookId,
-    user_id: currentUserId,
+    user_id: userId,
     char_offset: Math.round(charOffset),
-    percentage: Number(percentage.toFixed(2)),
+    percentage: Number((Number.isFinite(percentage) ? percentage : 0).toFixed(2)),
     chapter_index: extra?.chapter_index,
     page_index: extra?.page_index,
     page_ratio: extra?.page_ratio,
     total_pages: extra?.total_pages,
     device_name: deviceName,
-    updated_at: timestamp,
+    updated_at: new Date().toISOString(),
   };
 
-  // 2. 清除既有的防抖計時器
-  if (syncTimeout) {
-    clearTimeout(syncTimeout);
-    syncTimeout = null;
-  }
+  try {
+    localStorage.setItem("novel_reader_last_book_id", bookId);
+  } catch (e) {}
 
-  // 3. 強制即時同步（生命週期事件、切換章節、返回書架）
+  LocalStore.saveLocalProgress(
+    bookId,
+    payload.char_offset,
+    payload.percentage,
+    deviceName,
+    false,
+    payload.updated_at,
+    extra,
+    userId
+  ).catch((e) => console.warn("[SyncEngine] 本機進度寫入失敗:", e));
+
+  const key = getProgressKey(bookId, userId);
+  pendingPayloads.set(key, payload);
+  beaconedAt.delete(key);
+
+  clearDebounce();
   if (forceImmediate) {
-    lastSyncedOffset = charOffset;
-    lastSyncedBookId = bookId;
-    sendProgressToServer(payload, true)
-      .then((result) => {
-        if (result && result.success) {
-          LocalStore.saveLocalProgress(
-            bookId,
-            charOffset,
-            percentage,
-            deviceName,
-            true,
-            timestamp,
-            extra,
-            currentUserId
-          );
-        }
-      })
-      .catch(() => {});
+    void flushPendingProgress();
     return;
   }
+  // 停止翻頁 3 秒後上傳；單次計時器，閒置時零背景計時器
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    void flushPendingProgress();
+  }, DEBOUNCE_MS);
+}
 
-  // 4. 平時閱讀翻頁防抖（停止翻頁 3 秒後自動向雲端同步）
-  // 注意：此計時器只在使用者翻頁時單次觸發，發送後即銷毀，閒置時完全零背景計時器，兼顧極致省電與進度可靠
-  syncTimeout = setTimeout(async () => {
-    syncTimeout = null;
-    if (lastSyncedBookId !== bookId || Math.abs(charOffset - lastSyncedOffset) > 10) {
-      const result = await sendProgressToServer(payload, false);
-      if (result && result.success) {
-        lastSyncedOffset = charOffset;
-        lastSyncedBookId = bookId;
-        LocalStore.saveLocalProgress(
-          bookId,
-          charOffset,
-          percentage,
-          deviceName,
-          true,
-          timestamp,
-          extra,
-          currentUserId
-        );
-      }
+export function hasPendingProgress(bookId: string): boolean {
+  return pendingPayloads.has(getProgressKey(bookId));
+}
+
+async function drainPending() {
+  const attempted = new Set<SyncPayload>();
+  while (isOnline()) {
+    const batch = Array.from(pendingPayloads.entries()).filter(([, p]) => !attempted.has(p));
+    if (batch.length === 0) return;
+    for (const [key, payload] of batch) {
+      attempted.add(payload);
+      const result = await sendProgressToServer(payload, "foreground");
+      await applySendResult(key, payload, result);
     }
-  }, 3000);
+  }
 }
 
 /**
- * Flushes all pending unsynced reading progress records stored in IndexedDB to the server
+ * 前景上傳所有尚未確認的進度（翻頁防抖到期、切章、返回書架、回到前景）
+ * 沒有待上傳進度時不會發出任何請求
  */
-export async function flushUnsyncedProgress(): Promise<void> {
-  if (typeof window === "undefined" || !navigator.onLine) return;
-
-  try {
-    const unsynced = await LocalStore.getAllUnsyncedProgress();
-    const fallbackUserId = getCachedUserId();
-
-    for (const item of unsynced) {
-      const parts = item.book_id.split(":");
-      const realBookId = parts.length > 1 ? parts[1] : parts[0];
-      const itemUserId = item.user_id || (parts.length > 1 ? parts[0] : fallbackUserId);
-
-      const res = await sendProgressToServer(
-        {
-          book_id: realBookId,
-          user_id: itemUserId,
-          char_offset: item.char_offset,
-          percentage: item.percentage,
-          chapter_index: item.chapter_index,
-          page_index: item.page_index,
-          page_ratio: item.page_ratio,
-          total_pages: item.total_pages,
-          device_name: item.device_name,
-          updated_at: item.updated_at,
-        },
-        false
-      );
-
-      if (res.success) {
-        await LocalStore.markProgressSynced(item.book_id);
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to flush unsynced progress:", e);
+export function flushPendingProgress(): Promise<void> {
+  clearDebounce();
+  if (!flushPendingPromise) {
+    if (pendingPayloads.size === 0) return Promise.resolve();
+    flushPendingPromise = drainPending()
+      .catch((e) => console.warn("[SyncEngine] flushPendingProgress error:", e))
+      .finally(() => {
+        flushPendingPromise = null;
+      });
   }
+  return flushPendingPromise;
+}
+
+/**
+ * 退到背景 / 關閉 / 凍結時呼叫：以 sendBeacon 同步送出尚未確認的進度
+ * 必須在事件處理器中同步執行
+ */
+export function beaconPendingProgress(): void {
+  clearDebounce();
+  pendingPayloads.forEach((payload, key) => {
+    if (beaconedAt.get(key) === payload.updated_at) return;
+    if (sendInBackground(JSON.stringify(payload))) {
+      beaconedAt.set(key, payload.updated_at);
+    }
+  });
+}
+
+function recordToPayload(record: LocalProgressRecord, fallbackUserId: string): SyncPayload {
+  const sep = record.book_id.indexOf(":");
+  const realBookId = sep >= 0 ? record.book_id.slice(sep + 1) : record.book_id;
+  const userId = record.user_id || (sep >= 0 ? record.book_id.slice(0, sep) : fallbackUserId);
+  return {
+    book_id: realBookId,
+    user_id: userId,
+    char_offset: Math.round(record.char_offset || 0),
+    percentage: record.percentage || 0,
+    chapter_index: record.chapter_index,
+    page_index: record.page_index,
+    page_ratio: record.page_ratio,
+    total_pages: record.total_pages,
+    device_name: record.device_name || getDeviceName(),
+    updated_at: record.updated_at,
+  };
+}
+
+/**
+ * 以原始時間戳上傳一筆本機紀錄（例如伺服器尚無此書進度時補傳）
+ */
+export async function pushLocalProgressRecord(record: LocalProgressRecord): Promise<SendResult> {
+  const payload = recordToPayload(record, getCachedUserId());
+  const result = await sendProgressToServer(payload, "foreground");
+  await applySendResult(record.book_id, payload, result);
+  return result;
+}
+
+async function drainUnsynced() {
+  if (typeof window === "undefined" || !isOnline()) return;
+  const unsynced = await LocalStore.getAllUnsyncedProgress();
+  if (unsynced.length === 0) return;
+
+  const pendingUploadIds = new Set((await LocalStore.getPendingUploads()).map((b) => b.id));
+  const fallbackUserId = getCachedUserId();
+
+  for (const item of unsynced) {
+    const payload = recordToPayload(item, fallbackUserId);
+    const result = await sendProgressToServer(payload, "foreground");
+    await applySendResult(item.book_id, payload, result);
+
+    if (result.bookNotFound && !pendingUploadIds.has(payload.book_id)) {
+      // 書籍已不存在於伺服器且不在待上傳佇列，停止無限重試
+      await LocalStore.markProgressSynced(item.book_id, item.updated_at).catch(() => {});
+    } else if (result.authExpired || (!result.success && !result.bookNotFound && !isOnline())) {
+      break;
+    }
+  }
+}
+
+/**
+ * 上傳 IndexedDB / localStorage 中所有 unsynced 的進度（使用原始時間戳，伺服器以 LWW 判斷）
+ */
+export function flushUnsyncedProgress(): Promise<void> {
+  if (!flushUnsyncedPromise) {
+    flushUnsyncedPromise = drainUnsynced()
+      .catch((e) => console.warn("[SyncEngine] flushUnsyncedProgress error:", e))
+      .finally(() => {
+        flushUnsyncedPromise = null;
+      });
+  }
+  return flushUnsyncedPromise;
 }
 
 /**
@@ -267,21 +422,45 @@ export async function flushAllSyncTasks(): Promise<{ syncedBookIds: string[] }> 
     return [] as string[];
   });
 
-  await flushUnsyncedProgress().catch((e) => console.warn("flushUnsyncedProgress error:", e));
+  await flushPendingProgress();
+  await flushUnsyncedProgress();
 
   return { syncedBookIds };
 }
 
-// Auto-register online listener to flush sync queue
+/** 回到前景：先確認背景時用 beacon 送出的進度，再補送其他 unsynced 紀錄 */
+function resumeSync() {
+  if (!isOnline()) return;
+  flushPendingProgress()
+    .then(() => flushUnsyncedProgress())
+    .catch(console.warn);
+}
+
+// 全域生命週期監聽（模組只會載入一次，書架與閱讀器頁面皆生效）
 if (typeof window !== "undefined") {
+  const onHidden = () => beaconPendingProgress();
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      onHidden();
+    } else {
+      resumeSync();
+    }
+  });
+  window.addEventListener("pagehide", onHidden);
+  // Chrome Page Lifecycle：頁面被凍結前
+  document.addEventListener("freeze", onHidden);
+  window.addEventListener("pageshow", (e) => {
+    if ((e as PageTransitionEvent).persisted) resumeSync();
+  });
+
   window.addEventListener("online", () => {
     flushAllSyncTasks().catch(console.warn);
   });
-  // Auto-flush pending syncs on startup if already online
+  // 啟動時補送上次未完成的同步
   if (navigator.onLine) {
     setTimeout(() => {
       flushAllSyncTasks().catch(console.warn);
     }, 2000);
   }
 }
-

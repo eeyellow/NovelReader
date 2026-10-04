@@ -1,6 +1,7 @@
 import { openDB, DBSchema, IDBPDatabase } from "idb";
 import type { Book } from "./db";
 import { getCachedUserId } from "./clientAuth";
+import { parseSafeTime } from "./format";
 
 interface NovelReaderDB extends DBSchema {
   books_content: {
@@ -119,6 +120,61 @@ export async function requestPersistentStorage(): Promise<boolean> {
   return false;
 }
 
+export type LocalProgressRecord = NovelReaderDB["local_progress"]["value"];
+
+export interface ProgressExtraFields {
+  chapter_index?: number;
+  page_index?: number;
+  page_ratio?: number;
+  total_pages?: number;
+}
+
+const LS_PROGRESS_PREFIX = "novel_reader_prog_";
+
+function resolveProgressUserId(userId?: string): string {
+  return userId && userId !== "default_user" ? userId : getCachedUserId();
+}
+
+/** 本機進度紀錄的主鍵：`${userId}:${bookId}` */
+export function getProgressKey(bookId: string, userId?: string): string {
+  return `${resolveProgressUserId(userId)}:${bookId}`;
+}
+
+function readLsProgress(key: string): LocalProgressRecord | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(`${LS_PROGRESS_PREFIX}${key}`);
+    return raw ? (JSON.parse(raw) as LocalProgressRecord) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function writeLsProgress(lsKey: string, record: LocalProgressRecord) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(`${LS_PROGRESS_PREFIX}${lsKey}`, JSON.stringify(record));
+  } catch (e) {}
+}
+
+/** 取較新的一筆；時間相同時優先取已同步 (synced) 的版本 */
+function pickNewerProgress(
+  a?: LocalProgressRecord | null,
+  b?: LocalProgressRecord | null
+): LocalProgressRecord | null {
+  if (!a) return b || null;
+  if (!b) return a;
+  const ta = parseSafeTime(a.updated_at);
+  const tb = parseSafeTime(b.updated_at);
+  if (tb > ta) return b;
+  if (ta > tb) return a;
+  return b.synced && !a.synced ? b : a;
+}
+
+function isNotOlder(candidate: LocalProgressRecord, existing?: LocalProgressRecord | null) {
+  return !existing || parseSafeTime(candidate.updated_at) >= parseSafeTime(existing.updated_at);
+}
+
 export const LocalStore = {
   async saveBookContent(bookId: string, title: string, content: string, totalChars: number) {
     if (!content || typeof content !== "string" || (content.startsWith('{"') && content.includes('"success":false'))) {
@@ -161,10 +217,12 @@ export const LocalStore = {
     if (!db) return;
     await db.delete("books_content", bookId);
     await db.delete("local_progress", bookId);
+    await db.delete("local_progress", getProgressKey(bookId));
     await db.delete("chapters_cache", bookId);
     if (typeof localStorage !== "undefined") {
       try {
-        localStorage.removeItem(`novel_reader_prog_${bookId}`);
+        localStorage.removeItem(`${LS_PROGRESS_PREFIX}${bookId}`);
+        localStorage.removeItem(`${LS_PROGRESS_PREFIX}${getProgressKey(bookId)}`);
       } catch (e) {}
     }
     try {
@@ -191,6 +249,11 @@ export const LocalStore = {
     }
   },
 
+  /**
+   * 儲存一筆完整的進度快照（不與舊紀錄合併欄位，避免殘留其他排版/模式的 page_index）
+   * 1. 先「同步」寫入 localStorage：PWA 退到背景後頁面可能立即被凍結/終止，IDB 非同步交易可能來不及提交
+   * 2. IDB 以單一 readwrite 交易 get + put，且絕不讓較舊的紀錄覆蓋較新的紀錄
+   */
   async saveLocalProgress(
     bookId: string,
     charOffset: number,
@@ -198,94 +261,159 @@ export const LocalStore = {
     deviceName: string,
     synced: boolean = false,
     timestamp?: string,
-    extra?: {
-      chapter_index?: number;
-      page_index?: number;
-      page_ratio?: number;
-      total_pages?: number;
-    },
+    extra?: ProgressExtraFields,
     userId?: string
   ) {
-    const db = await getLocalDB();
-    if (!db) return;
-    const effectiveUserId =
-      userId && userId !== "default_user" ? userId : getCachedUserId();
+    const effectiveUserId = resolveProgressUserId(userId);
     const progressKey = `${effectiveUserId}:${bookId}`;
-    const existing =
-      (await db.get("local_progress", progressKey)) ||
-      (await db.get("local_progress", bookId));
-    const updatedAt = timestamp || new Date().toISOString();
-    const newProgress = {
+    const newProgress: LocalProgressRecord = {
       book_id: progressKey,
       user_id: effectiveUserId,
       char_offset: charOffset,
       percentage,
-      chapter_index:
-        extra?.chapter_index !== undefined ? extra.chapter_index : existing?.chapter_index,
-      page_index: extra?.page_index !== undefined ? extra.page_index : existing?.page_index,
-      page_ratio: extra?.page_ratio !== undefined ? extra.page_ratio : existing?.page_ratio,
-      total_pages: extra?.total_pages !== undefined ? extra.total_pages : existing?.total_pages,
+      chapter_index: extra?.chapter_index,
+      page_index: extra?.page_index,
+      page_ratio: extra?.page_ratio,
+      total_pages: extra?.total_pages,
       device_name: deviceName,
-      updated_at: updatedAt,
+      updated_at: timestamp || new Date().toISOString(),
       synced,
     };
-    await db.put("local_progress", newProgress);
-    if (typeof localStorage !== "undefined") {
-      try {
-        localStorage.setItem(`novel_reader_prog_${progressKey}`, JSON.stringify(newProgress));
-        localStorage.setItem(`novel_reader_prog_${bookId}`, JSON.stringify(newProgress));
-      } catch (e) {}
+
+    if (isNotOlder(newProgress, readLsProgress(progressKey))) {
+      writeLsProgress(progressKey, newProgress);
+      writeLsProgress(bookId, newProgress);
     }
+
+    const db = await getLocalDB();
+    if (!db) return;
+    const tx = db.transaction("local_progress", "readwrite");
+    const existing = await tx.store.get(progressKey);
+    if (isNotOlder(newProgress, existing)) {
+      await tx.store.put(newProgress);
+    }
+    await tx.done;
   },
 
-  async getLocalProgress(bookId: string, userId?: string) {
-    const db = await getLocalDB();
-    let record: any = null;
-    const effectiveUserId =
-      userId && userId !== "default_user" ? userId : getCachedUserId();
+  /** 將伺服器（其他裝置）較新的進度寫入本機，標記為已同步 */
+  async applyServerProgress(
+    bookId: string,
+    server: {
+      char_offset: number;
+      percentage?: number;
+      device_name?: string;
+      updated_at: string;
+      chapter_index?: number | null;
+      page_index?: number | null;
+      page_ratio?: number | null;
+      total_pages?: number | null;
+    },
+    userId?: string
+  ) {
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    await this.saveLocalProgress(
+      bookId,
+      server.char_offset,
+      server.percentage || 0,
+      server.device_name || "其他裝置",
+      true,
+      server.updated_at,
+      {
+        chapter_index: num(server.chapter_index),
+        page_index: num(server.page_index),
+        page_ratio: num(server.page_ratio),
+        total_pages: num(server.total_pages),
+      },
+      userId
+    );
+  },
+
+  async getLocalProgress(bookId: string, userId?: string): Promise<LocalProgressRecord | null> {
+    const effectiveUserId = resolveProgressUserId(userId);
     const progressKey = `${effectiveUserId}:${bookId}`;
-    if (db) {
-      record = await db.get("local_progress", progressKey);
-      if (!record && effectiveUserId !== "default_user") {
-        record = await db.get("local_progress", `default_user:${bookId}`);
-      }
-      if (!record) {
-        record = await db.get("local_progress", bookId);
-      }
-    }
-    if (!record && typeof localStorage !== "undefined") {
+    let db: IDBPDatabase<NovelReaderDB> | null = null;
+    try {
+      db = await getLocalDB();
+    } catch (e) {}
+
+    const read = async (key: string) => {
+      let idbRecord: LocalProgressRecord | undefined;
       try {
-        const rawUser = localStorage.getItem(`novel_reader_prog_${progressKey}`);
-        if (rawUser) record = JSON.parse(rawUser);
-        else {
-          const rawDef = localStorage.getItem(`novel_reader_prog_default_user:${bookId}`);
-          if (rawDef) record = JSON.parse(rawDef);
-          else {
-            const raw = localStorage.getItem(`novel_reader_prog_${bookId}`);
-            if (raw) record = JSON.parse(raw);
-          }
-        }
+        idbRecord = db ? await db.get("local_progress", key) : undefined;
       } catch (e) {}
+      // IDB 與 localStorage 取較新者（背景被終止時 localStorage 可能比 IDB 新）
+      return pickNewerProgress(idbRecord, readLsProgress(key));
+    };
+
+    let record = await read(progressKey);
+    if (!record && effectiveUserId !== "default_user") {
+      record = await read(`default_user:${bookId}`);
+    }
+    if (!record) {
+      record = await read(bookId);
     }
     return record;
   },
 
-  async getAllUnsyncedProgress() {
-    const db = await getLocalDB();
-    if (!db) return [];
-    const all = await db.getAll("local_progress");
-    return all.filter((p) => !p.synced);
+  async getAllUnsyncedProgress(): Promise<LocalProgressRecord[]> {
+    let db: IDBPDatabase<NovelReaderDB> | null = null;
+    try {
+      db = await getLocalDB();
+    } catch (e) {}
+    const all = db ? await db.getAll("local_progress") : [];
+    const merged = new Map<string, LocalProgressRecord>(all.map((r) => [r.book_id, r]));
+
+    // 合併 localStorage 鏡像：若 IDB 交易在頁面被終止前沒提交，localStorage 仍保有最後進度
+    if (typeof localStorage !== "undefined") {
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const lsKey = localStorage.key(i);
+          if (!lsKey || !lsKey.startsWith(LS_PROGRESS_PREFIX)) continue;
+          const key = lsKey.slice(LS_PROGRESS_PREFIX.length);
+          if (!key.includes(":")) continue;
+          const lsRecord = readLsProgress(key);
+          if (!lsRecord || lsRecord.book_id !== key) continue;
+          const idbRecord = merged.get(key);
+          if (pickNewerProgress(idbRecord, lsRecord) === lsRecord && lsRecord !== idbRecord) {
+            merged.set(key, lsRecord);
+            db?.put("local_progress", lsRecord).catch(() => {});
+          }
+        }
+      } catch (e) {}
+    }
+
+    return Array.from(merged.values()).filter((p) => !p.synced);
   },
 
-  async markProgressSynced(bookIdOrKey: string) {
+  /**
+   * 標記為已同步；若指定 updatedAt，只有在本機紀錄仍是同一筆時才標記，
+   * 避免較早送出的請求回應時，把之後新產生、尚未上傳的進度誤標為已同步
+   */
+  async markProgressSynced(progressKey: string, updatedAt?: string) {
+    const matches = (r?: LocalProgressRecord | null) =>
+      !!r && !r.synced && (!updatedAt || r.updated_at === updatedAt);
+
+    const lsRecord = readLsProgress(progressKey);
+    if (matches(lsRecord)) {
+      const next = { ...lsRecord!, synced: true };
+      writeLsProgress(progressKey, next);
+      const sep = progressKey.indexOf(":");
+      if (sep >= 0) {
+        const bareKey = progressKey.slice(sep + 1);
+        if (matches(readLsProgress(bareKey))) writeLsProgress(bareKey, next);
+      }
+    }
+
     const db = await getLocalDB();
     if (!db) return;
-    const existing = await db.get("local_progress", bookIdOrKey);
-    if (existing) {
-      existing.synced = true;
-      await db.put("local_progress", existing);
+    const tx = db.transaction("local_progress", "readwrite");
+    const existing = await tx.store.get(progressKey);
+    if (matches(existing)) {
+      await tx.store.put({ ...existing!, synced: true });
     }
+    await tx.done;
   },
+
 
   async getSetting<T>(key: string, defaultValue: T): Promise<T> {
     const db = await getLocalDB();

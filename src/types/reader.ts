@@ -45,6 +45,11 @@ export interface ConflictPromptData {
   serverOffset: number;
   serverPercentage: number;
   deviceName: string;
+  updatedAt?: string;
+  chapterIndex?: number;
+  pageIndex?: number;
+  pageRatio?: number;
+  totalPages?: number;
 }
 
 /** 閱讀器外觀與排版設定物件 */

@@ -22,7 +22,13 @@ import { useReaderBookmarks } from "@/hooks/useReaderBookmarks";
 import { useReaderSearch } from "@/hooks/useReaderSearch";
 import { useReaderPagination } from "@/hooks/useReaderPagination";
 import { parseSafeTime } from "@/lib/format";
-import { syncProgress, flushAllSyncTasks } from "@/lib/sync";
+import {
+  syncProgress,
+  flushAllSyncTasks,
+  pushLocalProgressRecord,
+  PROGRESS_CONFLICT_EVENT,
+  type ServerProgress,
+} from "@/lib/sync";
 import { GestureOverlay } from "@/components/gesture/GestureOverlay";
 import { GestureSettingsModal } from "@/components/gesture/GestureSettingsModal";
 import { ReaderHeader } from "@/components/reader/ReaderHeader";
@@ -194,22 +200,16 @@ export default function ReaderPage() {
                 serverOffset: sProg.char_offset,
                 serverPercentage: sProg.percentage,
                 deviceName: sProg.device_name || "其他裝置",
+                updatedAt: sProg.updated_at,
+                chapterIndex: sProg.chapter_index ?? undefined,
+                pageIndex: sProg.page_index ?? undefined,
+                pageRatio: sProg.page_ratio ?? undefined,
+                totalPages: sProg.total_pages ?? undefined,
               });
             }
           } else if (localProg && localProg.char_offset > 0) {
-            // 伺服器端尚無此書籍進度，而客戶端本機已有進度，主動將本機閱讀進度補同步至伺服器資料庫
-            syncProgress(
-              bookId,
-              localProg.char_offset,
-              localProg.percentage || 0,
-              true,
-              {
-                chapter_index: localProg.chapter_index,
-                page_index: localProg.page_index,
-                page_ratio: localProg.page_ratio,
-                total_pages: localProg.total_pages,
-              }
-            );
+            // 伺服器端尚無此書籍進度，以本機既有真實時間戳補同步至伺服器
+            pushLocalProgressRecord(localProg).catch(console.warn);
           }
         }
       }
@@ -219,24 +219,10 @@ export default function ReaderPage() {
   useEffect(() => {
     const handleOnline = () => {
       setIsOffline(false);
-      flushAllSyncTasks().catch(console.warn);
-
-      // 連線恢復時，若本機有進度，立即強制同步至伺服器
-      if (bookId && totalChars > 0) {
-        const curOffset = pagination.currentOffset;
-        const curPage = pagination.currentPage;
-        const totPages = pagination.totalPages;
-        const pageRatio = totPages > 0 ? curPage / totPages : 0;
-        const percentage = Number(((curOffset / totalChars) * 100).toFixed(2));
-        syncProgress(bookId, curOffset, percentage, true, {
-          chapter_index: currentChapterIdx,
-          page_index: curPage,
-          page_ratio: pageRatio,
-          total_pages: totPages,
-        });
-      }
-
-      checkServerProgressConflict();
+      // 連線恢復時依序同步待上傳小說與本機未同步進度（保留真實時間戳，絕不覆蓋雲端較新進度）
+      flushAllSyncTasks()
+        .then(() => checkServerProgressConflict())
+        .catch(console.warn);
     };
 
     const handleOffline = () => setIsOffline(true);
@@ -251,20 +237,32 @@ export default function ReaderPage() {
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
+    const handleConflictEvent = (e: Event) => {
+      const sProg = (e as CustomEvent<ServerProgress>).detail;
+      if (!sProg || sProg.book_id !== bookId) return;
+      const targetOffset = pagination.currentOffset;
+      if (Math.abs(sProg.char_offset - targetOffset) > 300) {
+        pagination.setConflictPrompt({
+          serverOffset: sProg.char_offset,
+          serverPercentage: sProg.percentage,
+          deviceName: sProg.device_name || "其他裝置",
+          updatedAt: sProg.updated_at,
+          chapterIndex: sProg.chapter_index ?? undefined,
+          pageIndex: sProg.page_index ?? undefined,
+          pageRatio: sProg.page_ratio ?? undefined,
+          totalPages: sProg.total_pages ?? undefined,
+        });
+      }
+    };
+    window.addEventListener(PROGRESS_CONFLICT_EVENT, handleConflictEvent);
+
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener(PROGRESS_CONFLICT_EVENT, handleConflictEvent);
     };
-  }, [
-    bookId,
-    totalChars,
-    currentChapterIdx,
-    pagination.currentOffset,
-    pagination.currentPage,
-    pagination.totalPages,
-    checkServerProgressConflict,
-  ]);
+  }, [bookId, checkServerProgressConflict, pagination]);
 
   useEffect(() => {
     if (!bookId) return;
@@ -648,10 +646,40 @@ export default function ReaderPage() {
         chapterSwitchToast={pagination.chapterSwitchToast}
         conflictPrompt={pagination.conflictPrompt}
         onDismissConflict={() => pagination.setConflictPrompt(null)}
-        onAcceptConflict={(serverOffset) => {
-          const newChIdx = findCurrentChapter(chapters, serverOffset);
+        onAcceptConflict={(conflict) => {
+          const targetOffset = conflict.serverOffset;
+          const newChIdx =
+            typeof conflict.chapterIndex === "number" && conflict.chapterIndex >= 0
+              ? conflict.chapterIndex
+              : findCurrentChapter(chapters, targetOffset);
+
           setCurrentChapterIdx(newChIdx);
-          pagination.pendingTargetOffset.current = serverOffset;
+          pagination.pendingTargetOffset.current = targetOffset;
+          if (typeof conflict.pageIndex === "number") {
+            pagination.pendingTargetPageIndex.current = conflict.pageIndex;
+          }
+          if (typeof conflict.pageRatio === "number") {
+            pagination.pendingTargetPageRatio.current = conflict.pageRatio;
+          }
+          if (typeof conflict.totalPages === "number") {
+            pagination.pendingTargetTotalPages.current = conflict.totalPages;
+          }
+
+          LocalStore.applyServerProgress(
+            bookId,
+            {
+              char_offset: targetOffset,
+              percentage: conflict.serverPercentage,
+              device_name: conflict.deviceName,
+              updated_at: conflict.updatedAt || new Date().toISOString(),
+              chapter_index: conflict.chapterIndex,
+              page_index: conflict.pageIndex,
+              page_ratio: conflict.pageRatio,
+              total_pages: conflict.totalPages,
+            },
+            getCachedUserId()
+          ).catch(console.warn);
+
           pagination.setConflictPrompt(null);
         }}
       />
