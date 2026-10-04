@@ -14,7 +14,16 @@ import {
   TextAlignMode,
   PaddingMode,
 } from "@/types/reader";
-import { FONT_FAMILIES } from "@/constants/themes";
+import { THEMES, FONT_FAMILIES } from "@/constants/themes";
+
+function applyThemeColor(themeId: string) {
+  if (typeof document === "undefined") return;
+  const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+  const targetTheme = THEMES.find((t) => t.id === themeId);
+  if (metaThemeColor && targetTheme) {
+    metaThemeColor.setAttribute("content", targetTheme.bg);
+  }
+}
 
 export function useReaderSettings(onActivity?: () => void) {
   const [theme, setTheme] = useState<string>("parchment");
@@ -79,11 +88,13 @@ export function useReaderSettings(onActivity?: () => void) {
     setChineseVariant(savedChineseVariant);
     setBrightness(Math.max(20, Math.min(100, savedBrightness)));
     document.documentElement.setAttribute("data-theme", savedTheme);
+    applyThemeColor(savedTheme);
   }, []);
 
   const updateTheme = useCallback((newTheme: string) => {
     setTheme(newTheme);
     document.documentElement.setAttribute("data-theme", newTheme);
+    applyThemeColor(newTheme);
     localStorage.setItem("novel_reader_theme", newTheme);
   }, []);
 
@@ -93,6 +104,7 @@ export function useReaderSettings(onActivity?: () => void) {
       const nextIdx = (themeOrder.indexOf(prevTheme) + 1) % themeOrder.length;
       const nextTheme = themeOrder[nextIdx];
       document.documentElement.setAttribute("data-theme", nextTheme);
+      applyThemeColor(nextTheme);
       localStorage.setItem("novel_reader_theme", nextTheme);
       return nextTheme;
     });

@@ -462,6 +462,28 @@ export default function ReaderPage() {
     }
   }, []);
 
+  // 工具列切換與手機系統頂部狀態列（電量 & 時間）全螢幕連動
+  const handleToggleToolbar = useCallback(() => {
+    setShowToolbar((prev) => {
+      const willHide = prev;
+      if (willHide) {
+        // 進入閱讀模式（頂部功能列隱藏）：進入全螢幕以隱藏手機系統頂部工具列（電量 & 時間）
+        if (
+          !document.fullscreenElement &&
+          document.documentElement.requestFullscreen
+        ) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } else {
+        // 喚出功能列：退出全螢幕以恢復手機系統頂部工具列（電量 & 時間）
+        if (document.fullscreenElement && document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+      return !prev;
+    });
+  }, []);
+
   // 同步全螢幕狀態
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -644,7 +666,7 @@ export default function ReaderPage() {
           ? pagination.goToPrevPage()
           : pagination.goToNextPage();
       } else {
-        setShowToolbar((prev) => !prev);
+        handleToggleToolbar();
       }
     },
     enabled: !isLoading,
@@ -762,7 +784,7 @@ export default function ReaderPage() {
           lastTouchActionTime={lastTouchActionTime}
           onPrevPage={pagination.goToPrevPage}
           onNextPage={pagination.goToNextPage}
-          onToggleToolbar={() => setShowToolbar((prev) => !prev)}
+          onToggleToolbar={handleToggleToolbar}
           onActivity={onUserActivity}
         />
       ) : (
@@ -780,7 +802,7 @@ export default function ReaderPage() {
           currentChapterIdx={currentChapterIdx}
           totalChapters={chapters.length}
           onScroll={pagination.handleContinuousScroll}
-          onToggleToolbar={() => setShowToolbar((prev) => !prev)}
+          onToggleToolbar={handleToggleToolbar}
           onPrevChapter={pagination.goToPrevChapter}
           onNextChapter={pagination.goToNextChapter}
         />

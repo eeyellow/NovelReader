@@ -147,11 +147,15 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
         </button>
         <button
           onClick={onToggleFullscreen}
-          className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors hidden sm:block"
-          title="全螢幕閱讀"
-          aria-label="全螢幕閱讀"
+          className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
+          title={isFullscreen ? "退出全螢幕" : "全螢幕沉浸閱讀"}
+          aria-label={isFullscreen ? "退出全螢幕" : "全螢幕沉浸閱讀"}
         >
-          {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+          {isFullscreen ? (
+            <Minimize className="w-5 h-5" />
+          ) : (
+            <Maximize className="w-5 h-5" />
+          )}
         </button>
       </div>
     </header>
