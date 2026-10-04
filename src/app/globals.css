@@ -110,6 +110,20 @@ body {
   padding-right: max(1rem, env(safe-area-inset-right));
 }
 
+.reader-paginated-padding {
+  padding-top: max(3.5rem, calc(env(safe-area-inset-top) + 1.25rem));
+  padding-bottom: max(3.5rem, calc(env(safe-area-inset-bottom) + 1.25rem));
+  padding-left: max(0.5rem, env(safe-area-inset-left));
+  padding-right: max(0.5rem, env(safe-area-inset-right));
+}
+
+.reader-continuous-padding {
+  padding-top: max(4rem, calc(env(safe-area-inset-top) + 1.5rem));
+  padding-bottom: max(6rem, calc(env(safe-area-inset-bottom) + 2rem));
+  padding-left: max(1rem, calc(env(safe-area-inset-left) + 1rem));
+  padding-right: max(1rem, calc(env(safe-area-inset-right) + 1rem));
+}
+
 /* Reader Text Container - Performance Isolated */
 .novel-content-paragraph {
   text-indent: 2em;

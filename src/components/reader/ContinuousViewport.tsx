@@ -54,7 +54,7 @@ export const ContinuousViewport: React.FC<ContinuousViewportProps> = ({
           onToggleToolbar();
         }
       }}
-      className="flex-1 overflow-y-auto px-4 sm:px-8 pt-16 pb-24 select-text"
+      className="flex-1 overflow-y-auto px-4 sm:px-8 reader-continuous-padding select-text"
     >
       <div className={`mx-auto w-full ${maxWidthClass}`}>
         {isLoading ? (

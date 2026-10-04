@@ -452,14 +452,37 @@ export default function ReaderPage() {
     router.push("/?from=reader");
   }, [pagination, router]);
 
+  // 跨瀏覽器全螢幕相容封裝
+  const getFullscreenElement = () => {
+    if (typeof document === "undefined") return null;
+    return (
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      null
+    );
+  };
+
   // 全螢幕切換
   const toggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(console.warn);
-      setIsFullscreen(true);
+    if (typeof document === "undefined") return;
+    const elem = document.documentElement as any;
+    if (!getFullscreenElement()) {
+      const req = elem.requestFullscreen || elem.webkitRequestFullscreen;
+      if (req) {
+        req
+          .call(elem)
+          .then(() => setIsFullscreen(true))
+          .catch(console.warn);
+      }
     } else {
-      document.exitFullscreen().catch(console.warn);
-      setIsFullscreen(false);
+      const exit =
+        document.exitFullscreen || (document as any).webkitExitFullscreen;
+      if (exit) {
+        exit
+          .call(document)
+          .then(() => setIsFullscreen(false))
+          .catch(console.warn);
+      }
     }
   }, []);
 
@@ -467,18 +490,20 @@ export default function ReaderPage() {
   const handleToggleToolbar = useCallback(() => {
     setShowToolbar((prev) => {
       const willHide = prev;
-      if (willHide) {
-        // 進入閱讀模式（頂部功能列隱藏）：進入全螢幕以隱藏手機系統頂部工具列（電量 & 時間）
-        if (
-          !document.fullscreenElement &&
-          document.documentElement.requestFullscreen
-        ) {
-          document.documentElement.requestFullscreen().catch(() => {});
-        }
-      } else {
-        // 喚出功能列：退出全螢幕以恢復手機系統頂部工具列（電量 & 時間）
-        if (document.fullscreenElement && document.exitFullscreen) {
-          document.exitFullscreen().catch(() => {});
+      if (typeof document !== "undefined") {
+        const elem = document.documentElement as any;
+        const req = elem.requestFullscreen || elem.webkitRequestFullscreen;
+        const exit =
+          document.exitFullscreen || (document as any).webkitExitFullscreen;
+
+        if (willHide) {
+          if (!getFullscreenElement() && req) {
+            req.call(elem).catch(() => {});
+          }
+        } else {
+          if (getFullscreenElement() && exit) {
+            exit.call(document).catch(() => {});
+          }
         }
       }
       return !prev;
@@ -687,28 +712,14 @@ export default function ReaderPage() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden flex flex-col select-text bg-[var(--bg-color)] text-[var(--text-color)]">
-      {/* 頂部懸浮工具列 */}
+      {/* 頂部懸浮資訊列 (極簡書名與章節資訊) */}
       <ReaderHeader
         showToolbar={showToolbar}
         title={title}
         processedChapterTitle={processedChapterTitle}
-        showTTSPlayer={showTTSPlayer}
-        showTOC={showTOC}
-        showSettings={showSettings}
-        isFullscreen={isFullscreen}
         isOffline={isOffline}
         onBackToShelf={handleBackToShelf}
-        onOpenSearch={() => searchHook.setShowSearchModal(true)}
-        onAddBookmark={bookmarkHook.handleAddBookmark}
-        onToggleTTS={() => {
-          setShowTTSPlayer((prev) => !prev);
-          if (!showTTSPlayer && !tts.isPlaying) {
-            tts.startReading(processedParagraphs, 0);
-          }
-        }}
-        onToggleTOC={() => setShowTOC(!showTOC)}
-        onToggleSettings={() => setShowSettings(!showSettings)}
-        onOpenGestureModal={() => setShowGestureModal(true)}
+        isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
       />
 
@@ -805,7 +816,7 @@ export default function ReaderPage() {
         />
       )}
 
-      {/* 底部控制列 */}
+      {/* 底部控制列 (整合章節頁數跳轉與大拇指操作熱區) */}
       <ReaderFooter
         showToolbar={showToolbar}
         scrubberMode={pagination.scrubberMode}
@@ -821,6 +832,23 @@ export default function ReaderPage() {
         currentOffset={pagination.currentOffset}
         totalChars={totalChars}
         scrubTargetInfo={pagination.scrubTargetInfo}
+        showTTSPlayer={showTTSPlayer}
+        showTOC={showTOC}
+        showSettings={showSettings}
+        isFullscreen={isFullscreen}
+        onBackToShelf={handleBackToShelf}
+        onOpenSearch={() => searchHook.setShowSearchModal(true)}
+        onAddBookmark={bookmarkHook.handleAddBookmark}
+        onToggleTTS={() => {
+          setShowTTSPlayer((prev) => !prev);
+          if (!showTTSPlayer && !tts.isPlaying) {
+            tts.startReading(processedParagraphs, 0);
+          }
+        }}
+        onToggleTOC={() => setShowTOC(!showTOC)}
+        onToggleSettings={() => setShowSettings(!showSettings)}
+        onOpenGestureModal={() => setShowGestureModal(true)}
+        onToggleFullscreen={toggleFullscreen}
         onToggleScrubberMode={() => {
           pagination.setScrubberMode((m) =>
             m === "chapter" ? "book" : "chapter",
@@ -874,6 +902,7 @@ export default function ReaderPage() {
         currentParagraphIdx={tts.currentParagraphIdx}
         totalParagraphs={processedParagraphs.length}
         rate={tts.rate}
+        showToolbar={showToolbar}
         onClose={() => {
           tts.stop();
           setShowTTSPlayer(false);

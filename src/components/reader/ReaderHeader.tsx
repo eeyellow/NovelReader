@@ -1,70 +1,41 @@
 /**
  * @file ReaderHeader.tsx
- * @description 閱讀器頂部懸浮工具列，整合返回書架、目錄、搜尋、書籤、TTS、排版設定與全螢幕控制
+ * @description 閱讀器頂部懸浮資訊列，展示返回書架、書名、章節與離線狀態
  */
 
 import React from "react";
-import {
-  ArrowLeft,
-  Search,
-  BookmarkPlus,
-  Volume2,
-  List,
-  Sliders,
-  MousePointerClick,
-  Maximize,
-  Minimize,
-  WifiOff,
-} from "lucide-react";
+import { ArrowLeft, Maximize, Minimize, WifiOff } from "lucide-react";
 
 interface ReaderHeaderProps {
   showToolbar: boolean;
   title: string;
   processedChapterTitle: string;
-  showTTSPlayer: boolean;
-  showTOC: boolean;
-  showSettings: boolean;
-  isFullscreen: boolean;
   isOffline?: boolean;
   onBackToShelf: () => void;
-  onOpenSearch: () => void;
-  onAddBookmark: () => void;
-  onToggleTTS: () => void;
-  onToggleTOC: () => void;
-  onToggleSettings: () => void;
-  onOpenGestureModal: () => void;
-  onToggleFullscreen: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
   showToolbar,
   title,
   processedChapterTitle,
-  showTTSPlayer,
-  showTOC,
-  showSettings,
-  isFullscreen,
   isOffline,
   onBackToShelf,
-  onOpenSearch,
-  onAddBookmark,
-  onToggleTTS,
-  onToggleTOC,
-  onToggleSettings,
-  onOpenGestureModal,
+  isFullscreen,
   onToggleFullscreen,
 }) => {
   return (
     <header
       style={{ backdropFilter: "none", WebkitBackdropFilter: "none" }}
-      className={`fixed top-0 inset-x-0 z-40 bg-[var(--card-bg)] border-b border-[var(--border-color)] px-4 py-2.5 safe-area-top items-center justify-between ${
+      className={`fixed top-0 inset-x-0 z-40 bg-[var(--card-bg)] border-b border-[var(--border-color)] px-4 py-2 safe-area-top items-center justify-between shadow-sm transition-opacity duration-200 ${
         showToolbar ? "flex" : "hidden"
       }`}
     >
       <div className="flex items-center space-x-2 truncate pr-2">
         <button
           onClick={onBackToShelf}
-          className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
+          className="p-1.5 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors"
           title="返回書架"
           aria-label="返回書架"
         >
@@ -88,66 +59,10 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
         </div>
       </div>
 
-      <div className="flex items-center space-x-1 shrink-0">
-        <button
-          onClick={onOpenSearch}
-          className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
-          title="書內全文檢索"
-          aria-label="搜尋內文"
-        >
-          <Search className="w-5 h-5" />
-        </button>
-        <button
-          onClick={onAddBookmark}
-          className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
-          title="加入書籤"
-          aria-label="加入書籤"
-        >
-          <BookmarkPlus className="w-5 h-5" />
-        </button>
-        <button
-          onClick={onToggleTTS}
-          className={`p-2 rounded-xl transition-colors ${
-            showTTSPlayer
-              ? "bg-[var(--accent-color)] text-white shadow-sm"
-              : "text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)]"
-          }`}
-          title="語音朗讀 (TTS)"
-          aria-label="語音朗讀"
-        >
-          <Volume2 className="w-5 h-5" />
-        </button>
-        <button
-          onClick={onToggleTOC}
-          className={`p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors ${
-            showTOC ? "text-[var(--accent-color)]" : ""
-          }`}
-          title="目錄與書籤"
-          aria-label="目錄與書籤"
-        >
-          <List className="w-5 h-5" />
-        </button>
-        <button
-          onClick={onToggleSettings}
-          className={`p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors ${
-            showSettings ? "text-[var(--accent-color)]" : ""
-          }`}
-          title="閱讀偏好排版"
-          aria-label="閱讀偏好排版"
-        >
-          <Sliders className="w-5 h-5" />
-        </button>
-        <button
-          onClick={onOpenGestureModal}
-          className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors hidden sm:block"
-          title="滑鼠手勢設定"
-          aria-label="滑鼠手勢設定"
-        >
-          <MousePointerClick className="w-5 h-5" />
-        </button>
+      {onToggleFullscreen && (
         <button
           onClick={onToggleFullscreen}
-          className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--card-bg)] transition-colors"
+          className="p-1.5 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors hidden sm:block shrink-0"
           title={isFullscreen ? "退出全螢幕" : "全螢幕沉浸閱讀"}
           aria-label={isFullscreen ? "退出全螢幕" : "全螢幕沉浸閱讀"}
         >
@@ -157,7 +72,8 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
             <Maximize className="w-5 h-5" />
           )}
         </button>
-      </div>
+      )}
     </header>
   );
 };
+

@@ -13,6 +13,7 @@ interface TTSPlayerWidgetProps {
   currentParagraphIdx: number;
   totalParagraphs: number;
   rate: number;
+  showToolbar?: boolean;
   onClose: () => void;
   onPrevParagraph: () => void;
   onTogglePlay: () => void;
@@ -27,6 +28,7 @@ export const TTSPlayerWidget: React.FC<TTSPlayerWidgetProps> = ({
   currentParagraphIdx,
   totalParagraphs,
   rate,
+  showToolbar,
   onClose,
   onPrevParagraph,
   onTogglePlay,
@@ -36,7 +38,13 @@ export const TTSPlayerWidget: React.FC<TTSPlayerWidgetProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed bottom-20 inset-x-4 sm:inset-x-auto sm:right-6 z-40 max-w-sm bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl p-3.5 shadow-2xl animate-fade-in space-y-2.5">
+    <div
+      className={`fixed inset-x-4 sm:inset-x-auto sm:right-6 z-40 max-w-sm bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl p-3.5 shadow-2xl animate-fade-in space-y-2.5 transition-all duration-200 ${
+        showToolbar
+          ? "bottom-[max(12rem,calc(env(safe-area-inset-bottom)+11rem))]"
+          : "bottom-[max(1.5rem,calc(env(safe-area-inset-bottom)+1rem))]"
+      }`}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-2">
           <div className="p-1.5 rounded-lg bg-[var(--accent-color)]/15 text-[var(--accent-color)]">

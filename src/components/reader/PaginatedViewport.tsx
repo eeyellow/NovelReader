@@ -91,7 +91,7 @@ export const PaginatedViewport: React.FC<PaginatedViewportProps> = ({
     <main
       ref={readerMainRef}
       onClick={handleClick}
-      className={`flex-1 overflow-hidden relative flex flex-col justify-center ${paddingClass} py-14 select-text cursor-default`}
+      className={`flex-1 overflow-hidden relative flex flex-col justify-center ${paddingClass} reader-paginated-padding select-text cursor-default`}
     >
       <div className={`mx-auto w-full h-full ${maxWidthClass} relative overflow-hidden`}>
         {isLoading ? (
