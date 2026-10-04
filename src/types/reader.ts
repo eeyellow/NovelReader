@@ -64,4 +64,5 @@ export interface ReaderSettingsState {
   readMode: ReadingMode;
   textAlign: TextAlignMode;
   paddingMode: PaddingMode;
+  brightness: number;
 }

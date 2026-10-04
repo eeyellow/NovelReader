@@ -4,7 +4,7 @@
  */
 
 import React from "react";
-import { X, MousePointerClick } from "lucide-react";
+import { X, MousePointerClick, Sun, SunMedium } from "lucide-react";
 import {
   ThemeId,
   FontFamilyId,
@@ -29,6 +29,7 @@ interface ReaderSettingsDrawerProps {
   readMode: ReadingMode;
   textAlign: TextAlignMode;
   paddingMode: PaddingMode;
+  brightness: number;
   onClose: () => void;
   onUpdateTheme: (themeId: string) => void;
   onUpdateFontSize: (delta: number) => void;
@@ -40,6 +41,7 @@ interface ReaderSettingsDrawerProps {
   onUpdateTextAlign: (align: TextAlignMode) => void;
   onUpdatePaddingMode: (pad: PaddingMode) => void;
   onUpdateChineseVariant: (variant: ChineseVariant) => void;
+  onUpdateBrightness: (val: number) => void;
   onOpenGestureModal: () => void;
 }
 
@@ -55,6 +57,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
   readMode,
   textAlign,
   paddingMode,
+  brightness,
   onClose,
   onUpdateTheme,
   onUpdateFontSize,
@@ -66,6 +69,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
   onUpdateTextAlign,
   onUpdatePaddingMode,
   onUpdateChineseVariant,
+  onUpdateBrightness,
   onOpenGestureModal,
 }) => {
   if (!isOpen) return null;
@@ -165,6 +169,33 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                   {t.name}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Brightness Control */}
+          <div className="space-y-2">
+            <div className="flex justify-between items-center text-xs">
+              <label className="font-semibold text-[var(--text-muted)] flex items-center gap-1.5">
+                <Sun className="w-3.5 h-3.5" />
+                亮度調整
+              </label>
+              <span className="font-mono text-xs text-[var(--text-muted)]">
+                {brightness}%
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <SunMedium className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
+              <input
+                type="range"
+                min="20"
+                max="100"
+                step="1"
+                value={brightness}
+                onChange={(e) => onUpdateBrightness(Number(e.target.value))}
+                className="w-full h-1.5 bg-[var(--border-color)] rounded-lg appearance-none cursor-pointer accent-[var(--accent-color)]"
+                aria-label="亮度調整"
+              />
+              <Sun className="w-4 h-4 text-[var(--text-color)] flex-shrink-0" />
             </div>
           </div>
 

@@ -22,33 +22,50 @@ export function useReaderSettings(onActivity?: () => void) {
   const [lineHeight, setLineHeight] = useState<number>(1.85);
   const [fontFamily, setFontFamily] = useState<FontFamilyId>("serif");
   const [maxWidthMode, setMaxWidthMode] = useState<MaxWidthMode>("normal");
-  const [clickDirection, setClickDirection] = useState<ClickDirection>("inverted");
-  const [chineseVariant, setChineseVariant] = useState<ChineseVariant>("original");
+  const [clickDirection, setClickDirection] =
+    useState<ClickDirection>("inverted");
+  const [chineseVariant, setChineseVariant] =
+    useState<ChineseVariant>("original");
   const [readMode, setReadMode] = useState<ReadingMode>("paginated");
   const [textAlign, setTextAlign] = useState<TextAlignMode>("justify");
   const [paddingMode, setPaddingMode] = useState<PaddingMode>("normal");
+  const [brightness, setBrightness] = useState<number>(100);
 
   // 從 localStorage 載入使用者偏好
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const savedTheme = localStorage.getItem("novel_reader_theme") || "parchment";
-    const savedFontSize = Number(localStorage.getItem("novel_reader_font_size")) || 19;
-    const savedLineHeight = Number(localStorage.getItem("novel_reader_line_height")) || 1.85;
+    const savedTheme =
+      localStorage.getItem("novel_reader_theme") || "parchment";
+    const savedFontSize =
+      Number(localStorage.getItem("novel_reader_font_size")) || 19;
+    const savedLineHeight =
+      Number(localStorage.getItem("novel_reader_line_height")) || 1.85;
     const savedFontFamily =
-      (localStorage.getItem("novel_reader_font_family") as FontFamilyId) || "serif";
+      (localStorage.getItem("novel_reader_font_family") as FontFamilyId) ||
+      "serif";
     const savedMaxWidth =
-      (localStorage.getItem("novel_reader_max_width") as MaxWidthMode) || "normal";
+      (localStorage.getItem("novel_reader_max_width") as MaxWidthMode) ||
+      "normal";
     const savedClickDirection =
-      (localStorage.getItem("novel_reader_click_direction") as ClickDirection) || "inverted";
+      (localStorage.getItem(
+        "novel_reader_click_direction",
+      ) as ClickDirection) || "inverted";
     const savedReadMode =
-      (localStorage.getItem("novel_reader_read_mode") as ReadingMode) || "paginated";
+      (localStorage.getItem("novel_reader_read_mode") as ReadingMode) ||
+      "paginated";
     const savedTextAlign =
-      (localStorage.getItem("novel_reader_text_align") as TextAlignMode) || "justify";
+      (localStorage.getItem("novel_reader_text_align") as TextAlignMode) ||
+      "justify";
     const savedPadding =
-      (localStorage.getItem("novel_reader_padding_mode") as PaddingMode) || "normal";
+      (localStorage.getItem("novel_reader_padding_mode") as PaddingMode) ||
+      "normal";
     const savedChineseVariant =
-      (localStorage.getItem("novel_reader_chinese_variant") as ChineseVariant) || "original";
+      (localStorage.getItem(
+        "novel_reader_chinese_variant",
+      ) as ChineseVariant) || "original";
+    const savedBrightness =
+      Number(localStorage.getItem("novel_reader_brightness")) || 100;
 
     setTheme(savedTheme);
     setFontSize(savedFontSize);
@@ -60,6 +77,7 @@ export function useReaderSettings(onActivity?: () => void) {
     setTextAlign(savedTextAlign);
     setPaddingMode(savedPadding);
     setChineseVariant(savedChineseVariant);
+    setBrightness(Math.max(20, Math.min(100, savedBrightness)));
     document.documentElement.setAttribute("data-theme", savedTheme);
   }, []);
 
@@ -114,7 +132,7 @@ export function useReaderSettings(onActivity?: () => void) {
       localStorage.setItem("novel_reader_read_mode", mode);
       onActivity?.();
     },
-    [onActivity]
+    [onActivity],
   );
 
   const updateTextAlign = useCallback((val: TextAlignMode) => {
@@ -133,8 +151,14 @@ export function useReaderSettings(onActivity?: () => void) {
       localStorage.setItem("novel_reader_chinese_variant", val);
       onActivity?.();
     },
-    [onActivity]
+    [onActivity],
   );
+
+  const updateBrightness = useCallback((val: number) => {
+    const clamped = Math.max(20, Math.min(100, val));
+    setBrightness(clamped);
+    localStorage.setItem("novel_reader_brightness", clamped.toString());
+  }, []);
 
   // 依據寬度設定對應之 Tailwind class
   const maxWidthClass = useMemo(() => {
@@ -162,7 +186,10 @@ export function useReaderSettings(onActivity?: () => void) {
 
   // 依據字體設定對應之 font class
   const currentFontClass = useMemo(() => {
-    return FONT_FAMILIES.find((f) => f.id === fontFamily)?.className || "font-serif-novel";
+    return (
+      FONT_FAMILIES.find((f) => f.id === fontFamily)?.className ||
+      "font-serif-novel"
+    );
   }, [fontFamily]);
 
   return {
@@ -176,6 +203,7 @@ export function useReaderSettings(onActivity?: () => void) {
     readMode,
     textAlign,
     paddingMode,
+    brightness,
     maxWidthClass,
     paddingClass,
     currentFontClass,
@@ -190,5 +218,6 @@ export function useReaderSettings(onActivity?: () => void) {
     updateTextAlign,
     updatePaddingMode,
     updateChineseVariant,
+    updateBrightness,
   };
 }

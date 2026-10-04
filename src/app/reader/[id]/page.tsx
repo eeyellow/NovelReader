@@ -5,14 +5,23 @@
  * @description 閱讀器核心頁面容器組件，負責整合資料載入、排版設定、分頁導航、語音朗讀與手勢互動
  */
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+} from "react";
 import { useParams, useRouter } from "next/navigation";
 import { LocalStore } from "@/lib/idb";
 import { getCachedUserId } from "@/lib/clientAuth";
 import { extractChapters, Chapter, findCurrentChapter } from "@/lib/parser";
 import { convertToTraditional, convertToSimplified } from "@/lib/chinese";
 import { GestureAction, GestureConfig } from "@/lib/gesture/types";
-import { DEFAULT_GESTURE_CONFIG, loadGestureConfig } from "@/lib/gesture/defaultGestures";
+import {
+  DEFAULT_GESTURE_CONFIG,
+  loadGestureConfig,
+} from "@/lib/gesture/defaultGestures";
 import { useMouseGesture } from "@/hooks/useMouseGesture";
 import { useTouchGesture } from "@/hooks/useTouchGesture";
 import { useWakeLock } from "@/hooks/useWakeLock";
@@ -61,10 +70,11 @@ export default function ReaderPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showTTSPlayer, setShowTTSPlayer] = useState(false);
   const [showGestureModal, setShowGestureModal] = useState(false);
-  const [gestureConfig, setGestureConfig] = useState<GestureConfig>(DEFAULT_GESTURE_CONFIG);
+  const [gestureConfig, setGestureConfig] = useState<GestureConfig>(
+    DEFAULT_GESTURE_CONFIG,
+  );
 
   const lastTouchActionTime = useRef<number>(0);
-
 
   // 螢幕防休眠喚醒鎖
   const { onUserActivity } = useWakeLock({ enabled: !isLoading });
@@ -101,7 +111,8 @@ export default function ReaderPage() {
   }, [currentChapter?.title, settings.chineseVariant]);
 
   const processedParagraphs = useMemo(() => {
-    if (!currentChapterParagraphs || currentChapterParagraphs.length === 0) return [];
+    if (!currentChapterParagraphs || currentChapterParagraphs.length === 0)
+      return [];
     if (settings.chineseVariant === "traditional") {
       return currentChapterParagraphs.map((p) => convertToTraditional(p));
     }
@@ -175,7 +186,10 @@ export default function ReaderPage() {
     if (!bookId || typeof window === "undefined" || !navigator.onLine) return;
     try {
       const currentUserId = getCachedUserId();
-      const localProg = await LocalStore.getLocalProgress(bookId, currentUserId);
+      const localProg = await LocalStore.getLocalProgress(
+        bookId,
+        currentUserId,
+      );
       const targetOffset = pagination.currentOffset;
 
       const controller = new AbortController();
@@ -183,7 +197,7 @@ export default function ReaderPage() {
 
       const progRes = await fetch(
         `/api/progress?bookId=${encodeURIComponent(bookId)}&userId=${encodeURIComponent(currentUserId)}`,
-        { signal: controller.signal }
+        { signal: controller.signal },
       );
       clearTimeout(timeoutId);
 
@@ -195,7 +209,10 @@ export default function ReaderPage() {
             const sTime = parseSafeTime(sProg.updated_at);
             const lTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
 
-            if (sTime > lTime + 3000 && Math.abs(sProg.char_offset - targetOffset) > 300) {
+            if (
+              sTime > lTime + 3000 &&
+              Math.abs(sProg.char_offset - targetOffset) > 300
+            ) {
               pagination.setConflictPrompt({
                 serverOffset: sProg.char_offset,
                 serverPercentage: sProg.percentage,
@@ -284,7 +301,8 @@ export default function ReaderPage() {
         if (
           cached &&
           cached.content &&
-          (!cached.content.startsWith('{"') || !cached.content.includes('"success":false'))
+          (!cached.content.startsWith('{"') ||
+            !cached.content.includes('"success":false'))
         ) {
           bookText = cached.content;
           bookTitle = cached.title;
@@ -302,7 +320,9 @@ export default function ReaderPage() {
 
           const [metaRes, contentRes] = await Promise.all([
             fetch(`/api/books/${bookId}`, { signal: controller.signal }),
-            fetch(`/api/books/${bookId}/content`, { signal: controller.signal }),
+            fetch(`/api/books/${bookId}/content`, {
+              signal: controller.signal,
+            }),
           ]);
           clearTimeout(timeoutId);
 
@@ -312,7 +332,8 @@ export default function ReaderPage() {
 
             if (
               !rawContent ||
-              (rawContent.startsWith('{"') && rawContent.includes('"success":false'))
+              (rawContent.startsWith('{"') &&
+                rawContent.includes('"success":false'))
             ) {
               throw new Error("取得小說內文格式異常");
             }
@@ -321,11 +342,19 @@ export default function ReaderPage() {
             bookTitle = metaData.book?.title || "未命名小說";
             bookChars = bookText.length;
 
-            if (Array.isArray(metaData.chapters) && metaData.chapters.length > 0) {
+            if (
+              Array.isArray(metaData.chapters) &&
+              metaData.chapters.length > 0
+            ) {
               serverChapters = metaData.chapters;
             }
 
-            await LocalStore.saveBookContent(bookId, bookTitle, bookText, bookChars);
+            await LocalStore.saveBookContent(
+              bookId,
+              bookTitle,
+              bookText,
+              bookChars,
+            );
           } else {
             throw new Error("無法讀取小說資料");
           }
@@ -374,10 +403,16 @@ export default function ReaderPage() {
       let targetTotalPages: number | null = null;
 
       const currentUserId = getCachedUserId();
-      const localProg = await LocalStore.getLocalProgress(bookId, currentUserId);
+      const localProg = await LocalStore.getLocalProgress(
+        bookId,
+        currentUserId,
+      );
       if (localProg) {
         targetOffset = localProg.char_offset || 0;
-        if (typeof localProg.chapter_index === "number" && localProg.chapter_index >= 0) {
+        if (
+          typeof localProg.chapter_index === "number" &&
+          localProg.chapter_index >= 0
+        ) {
           targetChapterIdx = localProg.chapter_index;
         } else {
           targetChapterIdx = findCurrentChapter(parsedChapters, targetOffset);
@@ -433,13 +468,20 @@ export default function ReaderPage() {
       setIsFullscreen(!!document.fullscreenElement);
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
   // 鍵盤導航快捷鍵
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (showTOC || showSettings || showGestureModal || searchHook.showSearchModal) return;
+      if (
+        showTOC ||
+        showSettings ||
+        showGestureModal ||
+        searchHook.showSearchModal
+      )
+        return;
 
       if (settings.readMode === "continuous") {
         const scrollEl = pagination.scrollContainerRef.current;
@@ -453,11 +495,15 @@ export default function ReaderPage() {
           e.preventDefault();
           if (scrollEl) {
             const isNearBottom =
-              scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 30;
+              scrollEl.scrollTop + scrollEl.clientHeight >=
+              scrollEl.scrollHeight - 30;
             if (isNearBottom) {
               pagination.goToNextChapter();
             } else {
-              scrollEl.scrollBy({ top: scrollEl.clientHeight * 0.8, behavior: "smooth" });
+              scrollEl.scrollBy({
+                top: scrollEl.clientHeight * 0.8,
+                behavior: "smooth",
+              });
             }
           }
         } else if (e.key === "PageUp") {
@@ -466,7 +512,10 @@ export default function ReaderPage() {
             if (scrollEl.scrollTop <= 10) {
               pagination.goToPrevChapter();
             } else {
-              scrollEl.scrollBy({ top: -scrollEl.clientHeight * 0.8, behavior: "smooth" });
+              scrollEl.scrollBy({
+                top: -scrollEl.clientHeight * 0.8,
+                behavior: "smooth",
+              });
             }
           }
         } else if (e.key === "ArrowRight") {
@@ -555,7 +604,7 @@ export default function ReaderPage() {
           break;
       }
     },
-    [pagination, handleBackToShelf, toggleFullscreen, settings]
+    [pagination, handleBackToShelf, toggleFullscreen, settings],
   );
 
   // 觸控手勢 Hook
@@ -649,7 +698,8 @@ export default function ReaderPage() {
         onAcceptConflict={(conflict) => {
           const targetOffset = conflict.serverOffset;
           const newChIdx =
-            typeof conflict.chapterIndex === "number" && conflict.chapterIndex >= 0
+            typeof conflict.chapterIndex === "number" &&
+            conflict.chapterIndex >= 0
               ? conflict.chapterIndex
               : findCurrentChapter(chapters, targetOffset);
 
@@ -677,7 +727,7 @@ export default function ReaderPage() {
               page_ratio: conflict.pageRatio,
               total_pages: conflict.totalPages,
             },
-            getCachedUserId()
+            getCachedUserId(),
           ).catch(console.warn);
 
           pagination.setConflictPrompt(null);
@@ -753,7 +803,9 @@ export default function ReaderPage() {
         totalChars={totalChars}
         scrubTargetInfo={pagination.scrubTargetInfo}
         onToggleScrubberMode={() => {
-          pagination.setScrubberMode((m) => (m === "chapter" ? "book" : "chapter"));
+          pagination.setScrubberMode((m) =>
+            m === "chapter" ? "book" : "chapter",
+          );
           pagination.setIsScrubbing(false);
           onUserActivity();
         }}
@@ -870,6 +922,7 @@ export default function ReaderPage() {
         readMode={settings.readMode}
         textAlign={settings.textAlign}
         paddingMode={settings.paddingMode}
+        brightness={settings.brightness}
         onClose={() => setShowSettings(false)}
         onUpdateTheme={settings.updateTheme}
         onUpdateFontSize={settings.updateFontSize}
@@ -881,6 +934,7 @@ export default function ReaderPage() {
         onUpdateTextAlign={settings.updateTextAlign}
         onUpdatePaddingMode={settings.updatePaddingMode}
         onUpdateChineseVariant={settings.updateChineseVariant}
+        onUpdateBrightness={settings.updateBrightness}
         onOpenGestureModal={() => {
           setShowSettings(false);
           setShowGestureModal(true);
@@ -904,6 +958,19 @@ export default function ReaderPage() {
         config={gestureConfig}
         onConfigChange={setGestureConfig}
       />
+
+      {/* 閱讀器亮度調整遮罩 (純 Web 遮罩，關閉或切到背景不影響手機系統或其它 App) */}
+      {settings.brightness < 100 && (
+        <div
+          className="fixed inset-0 pointer-events-none transition-opacity duration-150"
+          style={{
+            backgroundColor: "#000",
+            opacity: (100 - settings.brightness) / 100,
+            zIndex: 9999,
+          }}
+          aria-hidden="true"
+        />
+      )}
     </div>
   );
 }
