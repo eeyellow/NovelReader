@@ -9,7 +9,7 @@ import { LocalStore, requestPersistentStorage } from "@/lib/idb";
 import { getDeviceName, setCustomDeviceName } from "@/lib/device";
 import { decodeToUtf8 } from "@/lib/encoding";
 import { isSimplifiedChinese, convertToTraditional, convertToSimplified } from "@/lib/chinese";
-import { flushAllSyncTasks } from "@/lib/sync";
+import { flushAllSyncTasks, PROGRESS_CONFLICT_EVENT, ServerProgress } from "@/lib/sync";
 import { parseEpub } from "@/lib/epub";
 import { extractChapters } from "@/lib/parser";
 import { parseSafeTime } from "@/lib/format";
@@ -114,6 +114,10 @@ export function useBookshelf() {
             percentage: book.percentage || 0,
             device_name: book.last_device || "雲端同步",
             updated_at: book.progress_updated_at!,
+            chapter_index: book.chapter_index,
+            page_index: book.page_index,
+            page_ratio: book.page_ratio,
+            total_pages: book.total_pages,
           },
           userId
         );
@@ -122,6 +126,10 @@ export function useBookshelf() {
           percentage: book.percentage || 0,
           device_name: book.last_device || "雲端同步",
           updated_at: book.progress_updated_at,
+          chapter_index: book.chapter_index,
+          page_index: book.page_index,
+          page_ratio: book.page_ratio,
+          total_pages: book.total_pages,
           synced: true,
         };
       } else if (prog) {
@@ -458,17 +466,55 @@ export function useBookshelf() {
     // 5. Safari/iOS 持久儲存授權請求
     requestPersistentStorage().catch(console.warn);
 
-    // 6. 離線/在線狀態監聽
-    const handleOnline = () => {
-      setIsOffline(false);
+    // 6. 離線/在線與背景喚醒狀態監聽
+    const refreshBookshelf = () => {
       flushAllSyncTasks()
         .then(() => fetchBooks())
         .catch(console.warn);
+    };
+
+    const handleOnline = () => {
+      setIsOffline(false);
+      refreshBookshelf();
     };
     const handleOffline = () => setIsOffline(true);
     setIsOffline(!navigator.onLine);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
+
+    // 手機 PWA 從後台/鎖定螢幕喚醒時自動比對雲端最新進度
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshBookshelf();
+      }
+    };
+    const handlePageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) refreshBookshelf();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("resume", refreshBookshelf);
+    window.addEventListener("pageshow", handlePageShow);
+
+    // 跨分頁或背景同步衝突事件更新書架本機快取
+    const handleConflictEvent = (e: Event) => {
+      const sProg = (e as CustomEvent<ServerProgress>).detail;
+      if (!sProg?.book_id) return;
+      setLocalProgress((prev) => ({
+        ...prev,
+        [sProg.book_id]: {
+          char_offset: sProg.char_offset,
+          percentage: sProg.percentage,
+          device_name: sProg.device_name || "雲端同步",
+          updated_at: sProg.updated_at,
+          chapter_index: sProg.chapter_index ?? undefined,
+          page_index: sProg.page_index ?? undefined,
+          page_ratio: sProg.page_ratio ?? undefined,
+          total_pages: sProg.total_pages ?? undefined,
+          synced: true,
+        },
+      }));
+    };
+    window.addEventListener(PROGRESS_CONFLICT_EVENT, handleConflictEvent);
 
     // 7. 每次進入首頁書籍列表時觸發一次同步與最新書單載入（無背景輪詢以極大化省電）
     fetchAuthSession();
@@ -481,6 +527,10 @@ export function useBookshelf() {
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("resume", refreshBookshelf);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener(PROGRESS_CONFLICT_EVENT, handleConflictEvent);
       unsubscribeAuth();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

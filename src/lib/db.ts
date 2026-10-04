@@ -261,6 +261,10 @@ export interface Book {
   percentage?: number;
   last_device?: string;
   progress_updated_at?: string;
+  chapter_index?: number;
+  page_index?: number;
+  page_ratio?: number;
+  total_pages?: number;
 }
 
 export interface ReadingProgress {
@@ -342,7 +346,11 @@ export const BookModel = {
         p.char_offset,
         p.percentage,
         p.device_name as last_device,
-        p.updated_at as progress_updated_at
+        p.updated_at as progress_updated_at,
+        p.chapter_index,
+        p.page_index,
+        p.page_ratio,
+        p.total_pages
       FROM books b
       LEFT JOIN reading_progress p ON b.id = p.book_id AND p.user_id = ?
       ORDER BY COALESCE(p.updated_at, b.created_at) DESC
@@ -358,7 +366,11 @@ export const BookModel = {
         p.char_offset,
         p.percentage,
         p.device_name as last_device,
-        p.updated_at as progress_updated_at
+        p.updated_at as progress_updated_at,
+        p.chapter_index,
+        p.page_index,
+        p.page_ratio,
+        p.total_pages
       FROM books b
       LEFT JOIN reading_progress p ON b.id = p.book_id AND p.user_id = ?
       WHERE b.id = ?
@@ -498,16 +510,40 @@ export const ProgressModel = {
 
       // LWW: If incoming progress is newer or equal (容許 1 秒以內的網路時鐘誤差)
       if (clientTime >= existingTime - 1000) {
+        const nextChIdx = chIdx !== null ? chIdx : (existing.chapter_index ?? null);
+        const isChapterSwitched =
+          chIdx !== null &&
+          existing.chapter_index !== undefined &&
+          existing.chapter_index !== null &&
+          existing.chapter_index !== chIdx;
+        const nextPIdx =
+          pIdx !== null ? pIdx : isChapterSwitched ? null : (existing.page_index ?? null);
+        const nextPRatio =
+          pRatio !== null ? pRatio : isChapterSwitched ? null : (existing.page_ratio ?? null);
+        const nextTotPages =
+          totPages !== null ? totPages : isChapterSwitched ? null : (existing.total_pages ?? null);
+
         const stmt = db.prepare(`
           UPDATE reading_progress
           SET char_offset = ?, percentage = ?, device_name = ?, updated_at = ?,
-              chapter_index = COALESCE(?, chapter_index),
-              page_index = COALESCE(?, page_index),
-              page_ratio = COALESCE(?, page_ratio),
-              total_pages = COALESCE(?, total_pages)
+              chapter_index = ?,
+              page_index = ?,
+              page_ratio = ?,
+              total_pages = ?
           WHERE user_id = ? AND book_id = ?
         `);
-        stmt.run(charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages, userId, bookId);
+        stmt.run(
+          charOffset,
+          percentage,
+          deviceName,
+          now,
+          nextChIdx,
+          nextPIdx,
+          nextPRatio,
+          nextTotPages,
+          userId,
+          bookId
+        );
         return {
           updated: true,
           currentProgress: {
@@ -517,10 +553,10 @@ export const ProgressModel = {
             percentage,
             device_name: deviceName,
             updated_at: now,
-            chapter_index: chIdx ?? existing.chapter_index,
-            page_index: pIdx ?? existing.page_index,
-            page_ratio: pRatio ?? existing.page_ratio,
-            total_pages: totPages ?? existing.total_pages,
+            chapter_index: nextChIdx ?? undefined,
+            page_index: nextPIdx ?? undefined,
+            page_ratio: nextPRatio ?? undefined,
+            total_pages: nextTotPages ?? undefined,
           },
         };
       } else {

@@ -64,15 +64,25 @@ export const SYNC_AUTH_EXPIRED_EVENT = "novel_reader_sync_auth_expired";
 const PROGRESS_ENDPOINT = "/api/progress";
 const DEBOUNCE_MS = 3000;
 const FOREGROUND_TIMEOUT_MS = 10000;
+/** 回到前景後網路常尚未就緒（iOS PWA 尤其明顯），失敗時以退避重試 */
+const RETRY_DELAYS_MS = [1500, 4000, 10000, 30000, 60000];
 
 /** 尚未被伺服器確認的最新進度（key: `${userId}:${bookId}`） */
 const pendingPayloads = new Map<string, SyncPayload>();
 /** 已用 sendBeacon 送出的 updated_at，避免 visibilitychange + pagehide 連續觸發時重複送 */
 const beaconedAt = new Map<string, string>();
+/** 進行中的前景請求；退到背景時中止，避免凍結中的 fetch 卡住回前景後的補送 */
+const inflightControllers = new Set<AbortController>();
+/** 退到背景、送出 beacon 之前要先執行的回呼（例如閱讀器把節流中的捲動位置立即寫入） */
+const beforeBackgroundCallbacks = new Set<() => void>();
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let flushPendingPromise: Promise<void> | null = null;
 let flushUnsyncedPromise: Promise<void> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempt = 0;
+let authExpired = false;
+let unsyncedFailures = 0;
 
 function clearDebounce() {
   if (debounceTimer) {
@@ -81,8 +91,44 @@ function clearDebounce() {
   }
 }
 
+function clearRetryTimer() {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+}
+
 function isOnline() {
   return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+function isHidden() {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+/** 註冊在「退到背景送出 beacon 前」同步執行的回呼，回傳取消函式 */
+export function onBeforeBackgroundSync(cb: () => void): () => void {
+  beforeBackgroundCallbacks.add(cb);
+  return () => {
+    beforeBackgroundCallbacks.delete(cb);
+  };
+}
+
+/** 仍有未確認進度時，於前景以退避排程重試；成功清空後重置退避 */
+function maybeScheduleRetry() {
+  const hasWork = pendingPayloads.size > 0 || unsyncedFailures > 0;
+  if (!hasWork) {
+    retryAttempt = 0;
+    clearRetryTimer();
+    return;
+  }
+  if (retryTimer || authExpired || isHidden() || !isOnline()) return;
+  const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
+  retryAttempt++;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    resumeSync();
+  }, delay);
 }
 
 function emit(name: string, detail?: unknown) {
@@ -127,6 +173,7 @@ export async function sendProgressToServer(
   }
 
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (controller) inflightControllers.add(controller);
   const timer = controller ? setTimeout(() => controller.abort(), FOREGROUND_TIMEOUT_MS) : null;
   try {
     const res = await fetch(PROGRESS_ENDPOINT, {
@@ -162,17 +209,20 @@ export async function sendProgressToServer(
     }
     return { success: false };
   } catch (e) {
-    // 網路錯誤 / 逾時：保持 unsynced，等待下次 visible / online / 啟動時補送
+    // 網路錯誤 / 逾時 / 退背景中止：保持 unsynced，等待重試 / visible / online / 啟動時補送
     return { success: false };
   } finally {
     if (timer) clearTimeout(timer);
+    if (controller) inflightControllers.delete(controller);
   }
 }
 
 async function applySendResult(progressKey: string, payload: SyncPayload, result: SendResult) {
+  const pending = pendingPayloads.get(progressKey);
+  const isSamePending = !!pending && pending.updated_at === payload.updated_at;
   if (result.success) {
-    const pending = pendingPayloads.get(progressKey);
-    if (pending && pending.updated_at === payload.updated_at) {
+    authExpired = false;
+    if (isSamePending) {
       pendingPayloads.delete(progressKey);
       beaconedAt.delete(progressKey);
     }
@@ -181,7 +231,12 @@ async function applySendResult(progressKey: string, payload: SyncPayload, result
       emit(PROGRESS_CONFLICT_EVENT, result.currentProgress);
     }
   } else if (result.authExpired) {
+    authExpired = true;
     emit(SYNC_AUTH_EXPIRED_EVENT);
+  } else if (result.bookNotFound && isSamePending) {
+    // 書籍尚未存在於伺服器（例如離線上傳中），交由 drainUnsynced 依待上傳佇列決定是否重試
+    pendingPayloads.delete(progressKey);
+    beaconedAt.delete(progressKey);
   }
 }
 
@@ -250,13 +305,15 @@ export function hasPendingProgress(bookId: string): boolean {
 
 async function drainPending() {
   const attempted = new Set<SyncPayload>();
-  while (isOnline()) {
+  // 背景中不發 fetch（會被凍結/中止），交給 beacon 與回前景補送
+  while (isOnline() && !isHidden()) {
     const batch = Array.from(pendingPayloads.entries()).filter(([, p]) => !attempted.has(p));
     if (batch.length === 0) return;
     for (const [key, payload] of batch) {
       attempted.add(payload);
       const result = await sendProgressToServer(payload, "foreground");
       await applySendResult(key, payload, result);
+      if (result.authExpired) return;
     }
   }
 }
@@ -273,6 +330,7 @@ export function flushPendingProgress(): Promise<void> {
       .catch((e) => console.warn("[SyncEngine] flushPendingProgress error:", e))
       .finally(() => {
         flushPendingPromise = null;
+        maybeScheduleRetry();
       });
   }
   return flushPendingPromise;
@@ -283,6 +341,11 @@ export function flushPendingProgress(): Promise<void> {
  * 必須在事件處理器中同步執行
  */
 export function beaconPendingProgress(): void {
+  beforeBackgroundCallbacks.forEach((cb) => {
+    try {
+      cb();
+    } catch (e) {}
+  });
   clearDebounce();
   pendingPayloads.forEach((payload, key) => {
     if (beaconedAt.get(key) === payload.updated_at) return;
@@ -321,7 +384,8 @@ export async function pushLocalProgressRecord(record: LocalProgressRecord): Prom
 }
 
 async function drainUnsynced() {
-  if (typeof window === "undefined" || !isOnline()) return;
+  unsyncedFailures = 0;
+  if (typeof window === "undefined" || !isOnline() || isHidden()) return;
   const unsynced = await LocalStore.getAllUnsyncedProgress();
   if (unsynced.length === 0) return;
 
@@ -329,6 +393,10 @@ async function drainUnsynced() {
   const fallbackUserId = getCachedUserId();
 
   for (const item of unsynced) {
+    if (isHidden()) {
+      unsyncedFailures++;
+      break;
+    }
     const payload = recordToPayload(item, fallbackUserId);
     const result = await sendProgressToServer(payload, "foreground");
     await applySendResult(item.book_id, payload, result);
@@ -336,8 +404,11 @@ async function drainUnsynced() {
     if (result.bookNotFound && !pendingUploadIds.has(payload.book_id)) {
       // 書籍已不存在於伺服器且不在待上傳佇列，停止無限重試
       await LocalStore.markProgressSynced(item.book_id, item.updated_at).catch(() => {});
-    } else if (result.authExpired || (!result.success && !result.bookNotFound && !isOnline())) {
+    } else if (result.authExpired) {
       break;
+    } else if (!result.success && !result.bookNotFound) {
+      unsyncedFailures++;
+      if (!isOnline()) break;
     }
   }
 }
@@ -351,6 +422,7 @@ export function flushUnsyncedProgress(): Promise<void> {
       .catch((e) => console.warn("[SyncEngine] flushUnsyncedProgress error:", e))
       .finally(() => {
         flushUnsyncedPromise = null;
+        maybeScheduleRetry();
       });
   }
   return flushUnsyncedPromise;
@@ -428,9 +500,9 @@ export async function flushAllSyncTasks(): Promise<{ syncedBookIds: string[] }> 
   return { syncedBookIds };
 }
 
-/** 回到前景：先確認背景時用 beacon 送出的進度，再補送其他 unsynced 紀錄 */
+/** 回到前景：先確認背景時用 beacon 送出的進度，再補送其他 unsynced 紀錄（失敗會自動退避重試） */
 function resumeSync() {
-  if (!isOnline()) return;
+  if (!isOnline() || isHidden()) return;
   flushPendingProgress()
     .then(() => flushUnsyncedProgress())
     .catch(console.warn);
@@ -438,29 +510,45 @@ function resumeSync() {
 
 // 全域生命週期監聽（模組只會載入一次，書架與閱讀器頁面皆生效）
 if (typeof window !== "undefined") {
-  const onHidden = () => beaconPendingProgress();
+  const onHidden = () => {
+    beaconPendingProgress();
+    clearRetryTimer();
+    // beacon 已接手未確認的進度；中止凍結前仍在飛的 fetch，避免回前景時 flush 卡在舊 Promise 上
+    inflightControllers.forEach((c) => {
+      try {
+        c.abort();
+      } catch (e) {}
+    });
+  };
+
+  const onVisible = () => {
+    retryAttempt = 0;
+    clearRetryTimer();
+    resumeSync();
+  };
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       onHidden();
     } else {
-      resumeSync();
+      onVisible();
     }
   });
   window.addEventListener("pagehide", onHidden);
   // Chrome Page Lifecycle：頁面被凍結前
   document.addEventListener("freeze", onHidden);
+  document.addEventListener("resume", onVisible);
   window.addEventListener("pageshow", (e) => {
-    if ((e as PageTransitionEvent).persisted) resumeSync();
+    if ((e as PageTransitionEvent).persisted) onVisible();
   });
 
   window.addEventListener("online", () => {
+    retryAttempt = 0;
+    clearRetryTimer();
     flushAllSyncTasks().catch(console.warn);
   });
-  // 啟動時補送上次未完成的同步
-  if (navigator.onLine) {
-    setTimeout(() => {
-      flushAllSyncTasks().catch(console.warn);
-    }, 2000);
-  }
+  // 啟動時補送上次未完成的同步（被系統終止的 PWA 只會在這裡補上）
+  setTimeout(() => {
+    flushAllSyncTasks().catch(console.warn);
+  }, 1500);
 }

@@ -1,11 +1,22 @@
 /**
  * @file useReaderPagination.ts
  * @description 閱讀器分頁演算法、視窗尺寸響應、跨裝置進度同步與導航管理 Hook
+ *
+ * 進度回報原則：
+ * - 只有「使用者真的移動位置」（翻頁、切章、跳轉、捲動）才呼叫 syncProgress 產生新時間戳
+ * - 開書還原、套用雲端進度、旋轉/縮放/字級/全螢幕等版面重算，只更新「基準位置」，不產生新時間戳，
+ *   否則閒置裝置一回前景就會用舊位置蓋掉其他裝置較新的進度
  */
 
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import { Chapter, findCurrentChapter } from "@/lib/parser";
-import { syncProgress, flushPendingProgress, beaconPendingProgress } from "@/lib/sync";
+import {
+  syncProgress,
+  flushPendingProgress,
+  beaconPendingProgress,
+  onBeforeBackgroundSync,
+  type ProgressExtra,
+} from "@/lib/sync";
 import { ScrubberMode, ConflictPromptData } from "@/types/reader";
 
 interface UseReaderPaginationOptions {
@@ -23,7 +34,29 @@ interface UseReaderPaginationOptions {
   maxWidthMode: string;
   columnGap?: number;
   onActivity?: () => void;
+  /** 內容 DOM 是否已掛載（載入中為 false）；切換時需重新量測並重新掛 ResizeObserver */
+  isContentReady?: boolean;
+  /** 閱讀模式；切換時以目前 offset 還原位置 */
+  readMode?: string;
 }
+
+export interface RestoreTarget {
+  offset: number;
+  chapterIndex?: number;
+  pageIndex?: number;
+  pageRatio?: number;
+  totalPages?: number;
+}
+
+interface PositionSnapshot {
+  key: string;
+  chIdx: number;
+  offset: number;
+  extra: ProgressExtra;
+}
+
+const CONTINUOUS_MAX_RETRY_FRAMES = 120;
+const SCROLL_REPORT_THROTTLE_MS = 250;
 
 export function useReaderPagination({
   bookId,
@@ -40,6 +73,8 @@ export function useReaderPagination({
   maxWidthMode,
   columnGap = 36,
   onActivity,
+  isContentReady = true,
+  readMode = "paginated",
 }: UseReaderPaginationOptions) {
   const [currentPage, setCurrentPage] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
@@ -50,6 +85,8 @@ export function useReaderPagination({
   const [scrubBookPercentage, setScrubBookPercentage] = useState<number>(0);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPage, setScrubPage] = useState(0);
+  /** 量測完成後強制觸發一次位置回報（即使 page/totalPages 數值沒變） */
+  const [layoutTick, setLayoutTick] = useState(0);
 
   // 跨裝置雲端進度衝突提示
   const [conflictPrompt, setConflictPrompt] = useState<ConflictPromptData | null>(null);
@@ -67,6 +104,7 @@ export function useReaderPagination({
   const pendingTargetPageRatio = useRef<number | null>(null);
   const pendingTargetPageIndex = useRef<number | null>(null);
   const pendingTargetTotalPages = useRef<number | null>(null);
+  /** true 代表目前 pending 目標是「還原」（開書/套用雲端/切模式），結果只當基準、不上傳 */
   const isRestoringProgress = useRef<boolean>(true);
   const currentPageRef = useRef(currentPage);
   currentPageRef.current = currentPage;
@@ -79,7 +117,94 @@ export function useReaderPagination({
   currentChapterIdxRef.current = currentChapterIdx;
   const currentOffsetRef = useRef(currentOffset);
   currentOffsetRef.current = currentOffset;
-  const lastSyncedChapterIdxRef = useRef<number>(currentChapterIdx);
+  const bookIdRef = useRef(bookId);
+  bookIdRef.current = bookId;
+  const totalCharsRef = useRef(totalChars);
+  totalCharsRef.current = totalChars;
+  const isContentReadyRef = useRef(isContentReady);
+  isContentReadyRef.current = isContentReady;
+
+  /** 開書還原完成前絕不回報（避免以第 0 章第 0 頁蓋掉進度） */
+  const hasRestoredRef = useRef(false);
+  /** 最後一次「已回報或視為基準」的位置 key，相同就不重複產生時間戳 */
+  const lastReportedKeyRef = useRef<string | null>(null);
+  const lastReportedChapterRef = useRef<number | null>(null);
+  const continuousRetryRef = useRef(0);
+  const programmaticScrollRef = useRef<{ top: number; until: number } | null>(null);
+  const scrollReportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevLayoutChapterIdxRef = useRef(currentChapterIdx);
+  const prevReadModeRef = useRef(readMode);
+
+  const hasPendingNavigation = () =>
+    pendingPageRef.current !== null ||
+    pendingTargetOffset.current !== null ||
+    pendingTargetPageIndex.current !== null ||
+    pendingTargetPageRatio.current !== null;
+
+  const clearPendingTargets = () => {
+    pendingPageRef.current = null;
+    pendingTargetOffset.current = null;
+    pendingTargetPageIndex.current = null;
+    pendingTargetPageRatio.current = null;
+    pendingTargetTotalPages.current = null;
+  };
+
+  const markBaseline = (key: string, chIdx: number) => {
+    lastReportedKeyRef.current = key;
+    lastReportedChapterRef.current = chIdx;
+  };
+
+  // 換書時重置回報狀態
+  useEffect(() => {
+    hasRestoredRef.current = false;
+    lastReportedKeyRef.current = null;
+    lastReportedChapterRef.current = null;
+  }, [bookId]);
+
+  /** 由目前 DOM / state ref 計算位置（連續捲動用 scroll 比例，分頁用頁碼比例） */
+  const computePosition = useCallback((): PositionSnapshot | null => {
+    const chapter = currentChapterRef.current;
+    const total = totalCharsRef.current;
+    if (!chapter || !total) return null;
+    const chIdx = currentChapterIdxRef.current;
+    const chStart = chapter.charOffset;
+    const chLen = chapter.length || 0;
+    const scrollEl = scrollContainerRef.current;
+
+    if (!viewportRef.current && scrollEl) {
+      const range = scrollEl.scrollHeight - scrollEl.clientHeight;
+      const ratio = range > 0 ? Math.min(1, Math.max(0, scrollEl.scrollTop / range)) : 0;
+      const offset = Math.min(total, Math.round(chStart + ratio * chLen));
+      return { key: `${chIdx}:s${offset}`, chIdx, offset, extra: { chapter_index: chIdx } };
+    }
+
+    const page = currentPageRef.current;
+    const pages = totalPagesRef.current;
+    if (pages <= 0) return null;
+    const pageRatio = page / pages;
+    const offset = Math.min(total, Math.round(chStart + pageRatio * chLen));
+    return {
+      key: `${chIdx}:${page}/${pages}`,
+      chIdx,
+      offset,
+      extra: { chapter_index: chIdx, page_index: page, page_ratio: pageRatio, total_pages: pages },
+    };
+  }, []);
+
+  /** 回報目前位置：只有與上次基準不同、且開書還原已完成時才產生新時間戳 */
+  const reportPosition = useCallback(() => {
+    const pos = computePosition();
+    if (!pos) return;
+    setCurrentOffset(pos.offset);
+    if (!hasRestoredRef.current || hasPendingNavigation()) return;
+    if (pos.key === lastReportedKeyRef.current) return;
+
+    const chapterChanged =
+      lastReportedChapterRef.current !== null && lastReportedChapterRef.current !== pos.chIdx;
+    markBaseline(pos.key, pos.chIdx);
+    const percentage = Number(((pos.offset / totalCharsRef.current) * 100).toFixed(2));
+    syncProgress(bookIdRef.current, pos.offset, percentage, chapterChanged, pos.extra);
+  }, [computePosition]);
 
   // 章節切換 Toast 提示
   const notifyChapterSwitch = useCallback(
@@ -93,60 +218,103 @@ export function useReaderPagination({
     [chapters]
   );
 
+  // 連續滾動容器的位置還原與重新定位
+  const applyContinuousScrollTarget = useCallback(() => {
+    const scrollEl = scrollContainerRef.current;
+    const chapter = currentChapterRef.current;
+    if (!scrollEl || !chapter) return false;
+    const range = scrollEl.scrollHeight - scrollEl.clientHeight;
+    if (range <= 0) return false;
+
+    let targetTop: number | null = null;
+    if (pendingPageRef.current === "last") {
+      targetTop = range;
+    } else if (pendingPageRef.current === "first") {
+      targetTop = 0;
+    } else if (pendingTargetOffset.current !== null) {
+      const relOffset = Math.max(0, pendingTargetOffset.current - chapter.charOffset);
+      const chLen = chapter.length || 1;
+      const ratio = Math.min(1, Math.max(0, relOffset / chLen));
+      targetTop = Math.round(ratio * range);
+    } else if (pendingTargetPageRatio.current !== null) {
+      targetTop = Math.round(pendingTargetPageRatio.current * range);
+    }
+
+    if (targetTop !== null) {
+      programmaticScrollRef.current = { top: targetTop, until: Date.now() + 350 };
+      scrollEl.scrollTop = targetTop;
+      const wasRestoring = isRestoringProgress.current;
+      clearPendingTargets();
+      isRestoringProgress.current = false;
+      const pos = computePosition();
+      if (pos) {
+        setCurrentOffset(pos.offset);
+        markBaseline(pos.key, pos.chIdx);
+      }
+      if (wasRestoring) {
+        hasRestoredRef.current = true;
+      }
+      return true;
+    }
+    return false;
+  }, [computePosition]);
+
   // 多欄分頁核心重算演算法
   const measurePagination = useCallback(() => {
+    // 連續滾動模式
+    if (!viewportRef.current && scrollContainerRef.current) {
+      if (hasPendingNavigation()) {
+        const applied = applyContinuousScrollTarget();
+        if (!applied && continuousRetryRef.current < CONTINUOUS_MAX_RETRY_FRAMES) {
+          continuousRetryRef.current++;
+          requestAnimationFrame(() => measurePagination());
+        } else {
+          continuousRetryRef.current = 0;
+        }
+      }
+      return;
+    }
+
     if (!viewportRef.current || !contentRef.current) return;
 
     const vWidth = viewportRef.current.clientWidth;
     if (vWidth <= 0) return;
     setViewportWidth(vWidth);
 
-    // 強制將當前視窗寬度同步至 contentRef DOM 樣式，避免 React 狀態更新延遲導致第一次計算 columnWidth 為 auto
     contentRef.current.style.width = `${vWidth}px`;
     contentRef.current.style.columnWidth = `${vWidth}px`;
     contentRef.current.style.columnGap = `${columnGap}px`;
     contentRef.current.style.columnFill = "auto";
 
-    // 由 CSS columns 計算的整體內容滾動寬度
     const scrollW = contentRef.current.scrollWidth;
     const totalCols = Math.max(1, Math.round((scrollW + columnGap) / (vWidth + columnGap)));
     setTotalPages(totalCols);
 
-    // 處理連續滾動容器的滾動位置重置與定位
-    if (scrollContainerRef.current) {
-      if (pendingPageRef.current === "last") {
-        scrollContainerRef.current.scrollTop =
-          scrollContainerRef.current.scrollHeight - scrollContainerRef.current.clientHeight;
-      } else if (pendingPageRef.current === "first") {
-        scrollContainerRef.current.scrollTop = 0;
-      } else if (pendingTargetOffset.current !== null && currentChapter) {
-        const relOffset = Math.max(0, pendingTargetOffset.current - currentChapter.charOffset);
-        const chLen = currentChapter.length || 1;
-        const ratio = Math.min(1, Math.max(0, relOffset / chLen));
-        scrollContainerRef.current.scrollTop = Math.round(
-          ratio * (scrollContainerRef.current.scrollHeight - scrollContainerRef.current.clientHeight)
-        );
-      }
-    }
-
-    // 判斷章節是否具有多頁內容特徵
+    const chapter = currentChapterRef.current;
     const chapterHasMultiplePagesLikely =
-      (currentChapter?.length || 0) > 350 || processedParagraphs.length > 2;
+      (chapter?.length || 0) > 350 || processedParagraphs.length > 2;
 
-    // 處理目標翻頁定位指示
     if (pendingPageRef.current === "last") {
       if (totalCols <= 1 && chapterHasMultiplePagesLikely) {
         requestAnimationFrame(() => measurePagination());
         return;
       }
       setCurrentPage(totalCols - 1);
-      pendingPageRef.current = null;
+      clearPendingTargets();
       isRestoringProgress.current = false;
-    } else if (pendingPageRef.current === "first") {
+      setLayoutTick((t) => t + 1);
+      return;
+    }
+
+    if (pendingPageRef.current === "first") {
       setCurrentPage(0);
-      pendingPageRef.current = null;
+      clearPendingTargets();
       isRestoringProgress.current = false;
-    } else if (
+      setLayoutTick((t) => t + 1);
+      return;
+    }
+
+    if (
       pendingTargetPageRatio.current !== null ||
       pendingTargetPageIndex.current !== null ||
       pendingTargetOffset.current !== null
@@ -155,25 +323,21 @@ export function useReaderPagination({
         (pendingTargetPageIndex.current !== null && pendingTargetPageIndex.current > 0) ||
         (pendingTargetPageRatio.current !== null && pendingTargetPageRatio.current > 0.05) ||
         (pendingTargetOffset.current !== null &&
-          currentChapter &&
-          pendingTargetOffset.current > currentChapter.charOffset + 300);
+          chapter &&
+          pendingTargetOffset.current > chapter.charOffset + 300);
 
-      // 若有非首頁的目標指示，但多欄排版尚未生效（總欄數仍為 1），保留目標並排入下一幀重新測量
       if (totalCols <= 1 && chapterHasMultiplePagesLikely && isTargetNonZero) {
-        requestAnimationFrame(() => {
-          measurePagination();
-        });
+        requestAnimationFrame(() => measurePagination());
         return;
       }
 
       let targetP = 0;
       const relOffset =
-        pendingTargetOffset.current !== null && currentChapter
-          ? Math.max(0, pendingTargetOffset.current - currentChapter.charOffset)
+        pendingTargetOffset.current !== null && chapter
+          ? Math.max(0, pendingTargetOffset.current - chapter.charOffset)
           : 0;
-      const chLen = currentChapter?.length || 1;
+      const chLen = chapter?.length || 1;
 
-      // 若 pendingTargetPageIndex > 0，優先還原精確頁碼
       if (
         pendingTargetPageIndex.current !== null &&
         pendingTargetPageIndex.current > 0
@@ -183,14 +347,12 @@ export function useReaderPagination({
           pendingTargetTotalPages.current > 0 &&
           pendingTargetTotalPages.current !== totalCols
         ) {
-          // 版面尺寸已變更（例如旋轉螢幕或縮放視窗），依原總頁數比例對應新總頁數
           const ratio = pendingTargetPageIndex.current / pendingTargetTotalPages.current;
           targetP = Math.min(totalCols - 1, Math.max(0, Math.floor(ratio * totalCols)));
         } else {
           targetP = Math.min(totalCols - 1, Math.max(0, pendingTargetPageIndex.current));
         }
-      } else if (pendingTargetOffset.current !== null && currentChapter && relOffset > 300) {
-        // 若 pendingTargetPageIndex 為 0（可能曾被舊版本誤設為 0），但 offset 明顯已深入本章，以字元偏移量比例計算真實頁碼
+      } else if (pendingTargetOffset.current !== null && chapter && relOffset > 300) {
         const ratio = Math.min(1, Math.max(0, relOffset / chLen));
         targetP = Math.min(totalCols - 1, Math.max(0, Math.floor(ratio * totalCols + 1e-4)));
       } else if (pendingTargetPageIndex.current !== null && pendingTargetPageIndex.current >= 0) {
@@ -200,7 +362,7 @@ export function useReaderPagination({
           totalCols - 1,
           Math.max(0, Math.floor(pendingTargetPageRatio.current * totalCols))
         );
-      } else if (pendingTargetOffset.current !== null && currentChapter) {
+      } else if (pendingTargetOffset.current !== null && chapter) {
         const ratio = Math.min(1, Math.max(0, relOffset / chLen));
         targetP = Math.min(totalCols - 1, Math.max(0, Math.floor(ratio * totalCols + 1e-4)));
       }
@@ -212,23 +374,31 @@ export function useReaderPagination({
         void contentRef.current.offsetWidth;
       }
 
-      pendingTargetPageRatio.current = null;
-      pendingTargetPageIndex.current = null;
-      pendingTargetOffset.current = null;
-      pendingTargetTotalPages.current = null;
+      const wasRestoring = isRestoringProgress.current;
+      clearPendingTargets();
       setTimeout(() => {
         if (contentRef.current) {
           contentRef.current.style.transition = "";
         }
         isRestoringProgress.current = false;
       }, 300);
+
+      const chIdx = currentChapterIdxRef.current;
+      const baseKey = `${chIdx}:${targetP}/${totalCols}`;
+      markBaseline(baseKey, chIdx);
+      if (wasRestoring) {
+        hasRestoredRef.current = true;
+      }
+      setLayoutTick((t) => t + 1);
     } else {
       setCurrentPage((prev) => Math.min(prev, totalCols - 1));
+      setLayoutTick((t) => t + 1);
     }
-  }, [currentChapter, columnGap, processedParagraphs.length]);
+  }, [columnGap, processedParagraphs.length, applyContinuousScrollTarget]);
 
-  // 排版或章節變更後重新計算分頁
+  // 排版、章節、字體或內容載入完成時重新計算分頁
   useLayoutEffect(() => {
+    continuousRetryRef.current = 0;
     measurePagination();
     const timer = setTimeout(() => {
       measurePagination();
@@ -241,12 +411,30 @@ export function useReaderPagination({
     lineHeight,
     fontFamily,
     maxWidthMode,
+    isContentReady,
+    readMode,
     measurePagination,
   ]);
 
+  // 閱讀模式或章節切換的追蹤
+  useEffect(() => {
+    if (prevLayoutChapterIdxRef.current !== currentChapterIdx) {
+      prevLayoutChapterIdxRef.current = currentChapterIdx;
+    }
+    if (prevReadModeRef.current !== readMode) {
+      prevReadModeRef.current = readMode;
+      // 切換閱讀模式時保留當前 offset 重新定位
+      if (currentOffsetRef.current > 0) {
+        pendingTargetOffset.current = currentOffsetRef.current;
+        isRestoringProgress.current = true;
+        measurePagination();
+      }
+    }
+  }, [currentChapterIdx, readMode, measurePagination]);
+
   // ResizeObserver 監聽視窗或旋轉螢幕，按閱讀比例保留位置
   useEffect(() => {
-    const el = viewportRef.current;
+    const el = viewportRef.current || scrollContainerRef.current;
     if (!el) return;
 
     const observer = new ResizeObserver((entries) => {
@@ -272,59 +460,73 @@ export function useReaderPagination({
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [measurePagination]);
+  }, [measurePagination, isContentReady, readMode]);
 
-  // 當翻頁或章節切換完成時計算當前 offset 並回傳進度
+  // 翻頁或佈局完成後的位置計算與回報
   useEffect(() => {
-    if (
-      isRestoringProgress.current ||
-      pendingTargetOffset.current !== null ||
-      pendingTargetPageIndex.current !== null ||
-      pendingTargetPageRatio.current !== null ||
-      pendingPageRef.current !== null
-    ) {
-      return;
-    }
-    if (!currentChapter || !totalChars || totalPages <= 0) return;
+    reportPosition();
+  }, [currentPage, totalPages, currentChapterIdx, layoutTick, reportPosition]);
 
-    const chStart = currentChapter.charOffset;
-    const chLen = currentChapter.length || 0;
-    const pageRatio = totalPages > 0 ? currentPage / totalPages : 0;
-    const calculatedOffset = Math.min(totalChars, Math.round(chStart + pageRatio * chLen));
-
-    setCurrentOffset(calculatedOffset);
-    const percentage = Number(((calculatedOffset / totalChars) * 100).toFixed(2));
-
-    // 當章節索引變更（切換至新章節並就緒）時，立即強制向雲端同步新章節進度！
-    const isChapterChanged = lastSyncedChapterIdxRef.current !== currentChapterIdx;
-    if (isChapterChanged) {
-      lastSyncedChapterIdxRef.current = currentChapterIdx;
-    }
-
-    syncProgress(bookId, calculatedOffset, percentage, isChapterChanged, {
-      chapter_index: currentChapterIdx,
-      page_index: currentPage,
-      page_ratio: pageRatio,
-      total_pages: totalPages,
+  // 註冊退到背景前的同步鉤子：強制確認最新進度已排入待發佇列
+  useEffect(() => {
+    return onBeforeBackgroundSync(() => {
+      // 若連續滾動有節流中的回報，立刻結清
+      if (scrollReportTimerRef.current) {
+        clearTimeout(scrollReportTimerRef.current);
+        scrollReportTimerRef.current = null;
+      }
+      const pos = computePosition();
+      if (!pos || !hasRestoredRef.current) return;
+      if (pos.key !== lastReportedKeyRef.current) {
+        markBaseline(pos.key, pos.chIdx);
+        const percentage = Number(((pos.offset / totalCharsRef.current) * 100).toFixed(2));
+        syncProgress(bookIdRef.current, pos.offset, percentage, false, pos.extra);
+      }
     });
-  }, [bookId, currentChapter, currentChapterIdx, currentPage, totalPages, totalChars]);
+  }, [computePosition]);
+
+  // 組件卸載時，確保待同步佇列立即送出
+  useEffect(() => {
+    return () => {
+      if (scrollReportTimerRef.current) {
+        clearTimeout(scrollReportTimerRef.current);
+      }
+      beaconPendingProgress();
+      flushPendingProgress().catch(() => {});
+    };
+  }, []);
+
+  // 專門用於「開書初始化」或「接收雲端進度衝突」的還原函式
+  const restoreProgress = useCallback(
+    (target: RestoreTarget) => {
+      isRestoringProgress.current = true;
+      hasRestoredRef.current = false;
+      pendingTargetOffset.current = target.offset;
+      pendingTargetPageIndex.current = target.pageIndex ?? null;
+      pendingTargetPageRatio.current = target.pageRatio ?? null;
+      pendingTargetTotalPages.current = target.totalPages ?? null;
+
+      const targetChIdx =
+        typeof target.chapterIndex === "number" && target.chapterIndex >= 0
+          ? target.chapterIndex
+          : findCurrentChapter(chapters, target.offset);
+
+      setCurrentChapterIdx(targetChIdx);
+      setCurrentOffset(target.offset);
+      measurePagination();
+    },
+    [chapters, measurePagination, setCurrentChapterIdx]
+  );
 
   // 主動觸發進度雲端同步（用於返回書架、跳轉等重要節點，不重新產生時間戳）
   const syncCurrentProgressToServer = useCallback(() => {
     flushPendingProgress().catch(console.warn);
   }, []);
 
-  // 組件卸載時，確保待同步佇列立即送出
-  useEffect(() => {
-    return () => {
-      beaconPendingProgress();
-      flushPendingProgress().catch(() => {});
-    };
-  }, []);
-
-  // 翻頁導航方法
+  // 翻頁導航方法（使用者操作，主動設定 isRestoringProgress = false）
   const goToNextPage = useCallback(() => {
     if (currentPage < totalPages - 1) {
+      isRestoringProgress.current = false;
       setCurrentPage((p) => p + 1);
     } else if (currentChapterIdx < chapters.length - 1) {
       pendingPageRef.current = "first";
@@ -337,6 +539,7 @@ export function useReaderPagination({
 
   const goToPrevPage = useCallback(() => {
     if (currentPage > 0) {
+      isRestoringProgress.current = false;
       setCurrentPage((p) => p - 1);
     } else if (currentChapterIdx > 0) {
       pendingPageRef.current = "last";
@@ -387,6 +590,7 @@ export function useReaderPagination({
   const jumpToChapter = useCallback(
     (chapter: Chapter) => {
       if (chapter.index === currentChapterIdx) {
+        isRestoringProgress.current = false;
         setCurrentPage(0);
       } else {
         pendingPageRef.current = "first";
@@ -397,32 +601,31 @@ export function useReaderPagination({
     [currentChapterIdx, setCurrentChapterIdx]
   );
 
-  // 連續滾動事件處理
+  // 連續滾動事件處理（節流回報，避免高頻觸發）
   const handleContinuousScroll = useCallback(() => {
     onActivity?.();
-    if (!scrollContainerRef.current || !currentChapter) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
-    if (scrollHeight <= clientHeight) return;
-    const ratio = scrollTop / (scrollHeight - clientHeight);
-    const chStart = currentChapter.charOffset;
-    const chLen = currentChapter.length || 0;
-    const offset = Math.round(chStart + ratio * chLen);
-    setCurrentOffset(offset);
+    const scrollEl = scrollContainerRef.current;
+    if (!scrollEl || !currentChapterRef.current) return;
 
-    syncProgress(
-      bookId,
-      offset,
-      Number(((offset / (totalChars || 1)) * 100).toFixed(1)),
-      false,
-      {
-        chapter_index: currentChapterIdx,
+    // 略過程式碼定位觸發的 scroll
+    if (programmaticScrollRef.current) {
+      if (Date.now() < programmaticScrollRef.current.until) {
+        return;
       }
-    );
-  }, [bookId, currentChapter, currentChapterIdx, totalChars, onActivity]);
+      programmaticScrollRef.current = null;
+    }
+
+    if (scrollReportTimerRef.current) return;
+    scrollReportTimerRef.current = setTimeout(() => {
+      scrollReportTimerRef.current = null;
+      reportPosition();
+    }, SCROLL_REPORT_THROTTLE_MS);
+  }, [onActivity, reportPosition]);
 
   // 跳轉至指定 offset 與章節
   const jumpToOffset = useCallback(
     (targetOffset: number, targetChapterIdx: number) => {
+      isRestoringProgress.current = false;
       pendingTargetOffset.current = targetOffset;
       if (targetChapterIdx === currentChapterIdx) {
         measurePagination();
@@ -491,6 +694,7 @@ export function useReaderPagination({
     pendingTargetTotalPages,
     isRestoringProgress,
     measurePagination,
+    restoreProgress,
     goToNextPage,
     goToPrevPage,
     goToNextChapter,

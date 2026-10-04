@@ -138,6 +138,8 @@ export default function ReaderPage() {
     maxWidthMode: settings.maxWidthMode,
     columnGap: 36,
     onActivity: onUserActivity,
+    isContentReady: !isLoading,
+    readMode: settings.readMode,
   });
 
   // 書籤管理 Hook
@@ -428,15 +430,14 @@ export default function ReaderPage() {
         }
       }
 
-      pagination.pendingTargetPageIndex.current = targetPageIndex;
-      pagination.pendingTargetPageRatio.current = targetPageRatio;
-      pagination.pendingTargetOffset.current = targetOffset;
-      pagination.pendingTargetTotalPages.current = targetTotalPages;
-      pagination.isRestoringProgress.current = true;
-
-      setCurrentChapterIdx(targetChapterIdx);
-      pagination.setCurrentOffset(targetOffset);
       setIsLoading(false);
+      pagination.restoreProgress({
+        offset: targetOffset,
+        chapterIndex: targetChapterIdx,
+        pageIndex: targetPageIndex ?? undefined,
+        pageRatio: targetPageRatio ?? undefined,
+        totalPages: targetTotalPages ?? undefined,
+      });
 
       // 4. 背景非阻塞檢查雲端進度衝突（不卡頓閱讀畫面）
       checkServerProgressConflict();
@@ -725,17 +726,13 @@ export default function ReaderPage() {
               ? conflict.chapterIndex
               : findCurrentChapter(chapters, targetOffset);
 
-          setCurrentChapterIdx(newChIdx);
-          pagination.pendingTargetOffset.current = targetOffset;
-          if (typeof conflict.pageIndex === "number") {
-            pagination.pendingTargetPageIndex.current = conflict.pageIndex;
-          }
-          if (typeof conflict.pageRatio === "number") {
-            pagination.pendingTargetPageRatio.current = conflict.pageRatio;
-          }
-          if (typeof conflict.totalPages === "number") {
-            pagination.pendingTargetTotalPages.current = conflict.totalPages;
-          }
+          pagination.restoreProgress({
+            offset: targetOffset,
+            chapterIndex: newChIdx,
+            pageIndex: conflict.pageIndex,
+            pageRatio: conflict.pageRatio,
+            totalPages: conflict.totalPages,
+          });
 
           LocalStore.applyServerProgress(
             bookId,
