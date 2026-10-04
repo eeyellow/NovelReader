@@ -22,7 +22,7 @@ export function useReaderSettings(onActivity?: () => void) {
   const [lineHeight, setLineHeight] = useState<number>(1.85);
   const [fontFamily, setFontFamily] = useState<FontFamilyId>("serif");
   const [maxWidthMode, setMaxWidthMode] = useState<MaxWidthMode>("normal");
-  const [clickDirection, setClickDirection] = useState<ClickDirection>("standard");
+  const [clickDirection, setClickDirection] = useState<ClickDirection>("inverted");
   const [chineseVariant, setChineseVariant] = useState<ChineseVariant>("original");
   const [readMode, setReadMode] = useState<ReadingMode>("paginated");
   const [textAlign, setTextAlign] = useState<TextAlignMode>("justify");
@@ -40,7 +40,7 @@ export function useReaderSettings(onActivity?: () => void) {
     const savedMaxWidth =
       (localStorage.getItem("novel_reader_max_width") as MaxWidthMode) || "normal";
     const savedClickDirection =
-      (localStorage.getItem("novel_reader_click_direction") as ClickDirection) || "standard";
+      (localStorage.getItem("novel_reader_click_direction") as ClickDirection) || "inverted";
     const savedReadMode =
       (localStorage.getItem("novel_reader_read_mode") as ReadingMode) || "paginated";
     const savedTextAlign =
