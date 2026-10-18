@@ -1,6 +1,6 @@
 /**
  * @file ReaderFooter.tsx
- * @description 閱讀器底部控制列，整合進度滑桿 (Scrubber)、章節與頁面快速切換按鈕、字數進度資訊與大拇指操作功能列
+ * @description 閱讀器底部控制列，整合進度滑桿、章節頁面切換與核心功能列
  */
 
 import React from "react";
@@ -10,12 +10,8 @@ import {
   ChevronFirst,
   ChevronLast,
   ArrowLeft,
-  Search,
-  BookmarkPlus,
-  Volume2,
   List,
   Sliders,
-  MousePointerClick,
   Maximize,
   Minimize,
 } from "lucide-react";
@@ -36,17 +32,12 @@ interface ReaderFooterProps {
   currentOffset: number;
   totalChars: number;
   scrubTargetInfo: { title: string; subtitle: string } | null;
-  showTTSPlayer: boolean;
   showTOC: boolean;
   showSettings: boolean;
   isFullscreen?: boolean;
   onBackToShelf: () => void;
-  onOpenSearch: () => void;
-  onAddBookmark: () => void;
-  onToggleTTS: () => void;
   onToggleTOC: () => void;
   onToggleSettings: () => void;
-  onOpenGestureModal?: () => void;
   onToggleFullscreen?: () => void;
   onToggleScrubberMode: () => void;
   onScrubbingInput: (val: number) => void;
@@ -72,17 +63,12 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
   currentOffset,
   totalChars,
   scrubTargetInfo,
-  showTTSPlayer,
   showTOC,
   showSettings,
   isFullscreen,
   onBackToShelf,
-  onOpenSearch,
-  onAddBookmark,
-  onToggleTTS,
   onToggleTOC,
   onToggleSettings,
-  onOpenGestureModal,
   onToggleFullscreen,
   onToggleScrubberMode,
   onScrubbingInput,
@@ -102,7 +88,6 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
       <div className="max-w-2xl mx-auto space-y-2">
         {/* Quick Progress Scrubber Slider */}
         <div className="relative flex items-center space-x-2 px-1">
-          {/* Realtime Floating Tooltip when scrubbing */}
           {isScrubbing && scrubTargetInfo && (
             <div className="absolute -top-11 inset-x-0 mx-auto w-fit max-w-[90%] bg-[var(--accent-color)] text-white text-[11px] font-medium px-3 py-1.5 rounded-xl shadow-xl flex items-center space-x-1.5 animate-fade-in pointer-events-none z-50 truncate">
               <span className="font-bold truncate">{scrubTargetInfo.title}</span>
@@ -110,7 +95,6 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
             </div>
           )}
 
-          {/* Mode Switch Button */}
           <button
             onClick={onToggleScrubberMode}
             className="px-2 py-0.5 rounded-md text-[10px] font-semibold border border-[var(--border-color)] hover:border-[var(--accent-color)] text-[var(--accent-color)] bg-[var(--card-bg)] transition-colors shrink-0"
@@ -171,7 +155,6 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
             </button>
           </div>
 
-          {/* Current Chapter Page Indicator */}
           <div className="flex flex-col items-center justify-center">
             <span className="text-xs font-bold text-[var(--accent-color)]">
               第 {currentPage + 1} / {totalPages} 頁
@@ -213,8 +196,8 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
           </span>
         </div>
 
-        {/* Primary Action Bar (Thumb Zone) */}
-        <div className="grid grid-cols-6 sm:grid-cols-8 gap-1 pt-2 border-t border-[var(--border-color)] text-[var(--text-muted)] select-none">
+        {/* Primary Action Bar */}
+        <div className="grid grid-cols-4 gap-1 pt-2 border-t border-[var(--border-color)] text-[var(--text-muted)] select-none">
           <button
             onClick={onBackToShelf}
             className="flex flex-col items-center justify-center py-1 rounded-xl hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors"
@@ -231,41 +214,10 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
                 ? "text-[var(--accent-color)] font-bold bg-[var(--bg-color)]"
                 : "hover:text-[var(--text-color)] hover:bg-[var(--bg-color)]"
             }`}
-            title="目錄與書籤"
+            title="章節目錄"
           >
             <List className="w-5 h-5" />
             <span className="text-[10px] mt-0.5 font-medium">目錄</span>
-          </button>
-
-          <button
-            onClick={onOpenSearch}
-            className="flex flex-col items-center justify-center py-1 rounded-xl hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors"
-            title="搜尋內文"
-          >
-            <Search className="w-5 h-5" />
-            <span className="text-[10px] mt-0.5 font-medium">搜尋</span>
-          </button>
-
-          <button
-            onClick={onAddBookmark}
-            className="flex flex-col items-center justify-center py-1 rounded-xl hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors"
-            title="加入書籤"
-          >
-            <BookmarkPlus className="w-5 h-5" />
-            <span className="text-[10px] mt-0.5 font-medium">書籤</span>
-          </button>
-
-          <button
-            onClick={onToggleTTS}
-            className={`flex flex-col items-center justify-center py-1 rounded-xl transition-colors ${
-              showTTSPlayer
-                ? "text-[var(--accent-color)] font-bold bg-[var(--bg-color)]"
-                : "hover:text-[var(--text-color)] hover:bg-[var(--bg-color)]"
-            }`}
-            title="語音朗讀"
-          >
-            <Volume2 className="w-5 h-5" />
-            <span className="text-[10px] mt-0.5 font-medium">朗讀</span>
           </button>
 
           <button
@@ -281,36 +233,22 @@ export const ReaderFooter: React.FC<ReaderFooterProps> = ({
             <span className="text-[10px] mt-0.5 font-medium">排版</span>
           </button>
 
-          {onOpenGestureModal && (
-            <button
-              onClick={onOpenGestureModal}
-              className="hidden sm:flex flex-col items-center justify-center py-1 rounded-xl hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors"
-              title="滑鼠手勢設定"
-            >
-              <MousePointerClick className="w-5 h-5" />
-              <span className="text-[10px] mt-0.5 font-medium">手勢</span>
-            </button>
-          )}
-
-          {onToggleFullscreen && (
-            <button
-              onClick={onToggleFullscreen}
-              className="hidden sm:flex flex-col items-center justify-center py-1 rounded-xl hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors"
-              title={isFullscreen ? "退出全螢幕" : "全螢幕沉浸閱讀"}
-            >
-              {isFullscreen ? (
-                <Minimize className="w-5 h-5" />
-              ) : (
-                <Maximize className="w-5 h-5" />
-              )}
-              <span className="text-[10px] mt-0.5 font-medium">
-                {isFullscreen ? "還原" : "全螢幕"}
-              </span>
-            </button>
-          )}
+          <button
+            onClick={onToggleFullscreen}
+            className="flex flex-col items-center justify-center py-1 rounded-xl hover:text-[var(--text-color)] hover:bg-[var(--bg-color)] transition-colors"
+            title={isFullscreen ? "退出全螢幕" : "全螢幕沉浸閱讀"}
+          >
+            {isFullscreen ? (
+              <Minimize className="w-5 h-5" />
+            ) : (
+              <Maximize className="w-5 h-5" />
+            )}
+            <span className="text-[10px] mt-0.5 font-medium">
+              {isFullscreen ? "還原" : "全螢幕"}
+            </span>
+          </button>
         </div>
       </div>
     </footer>
   );
 };
-

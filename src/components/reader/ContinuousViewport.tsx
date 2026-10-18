@@ -1,22 +1,23 @@
 /**
  * @file ContinuousViewport.tsx
- * @description 閱讀器垂直連續滾動閱讀視圖組件，整合滾動監聽、字型樣式、TTS 高亮與跨章節導航
+ * @description 閱讀器垂直連續滾動閱讀視圖組件
  */
 
 import React from "react";
-import { RefreshCw, Volume2, ChevronLeft, ChevronRight } from "lucide-react";
+import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
+import { TextAlignMode } from "@/types/reader";
 
 interface ContinuousViewportProps {
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  paddingClass: string;
   maxWidthClass: string;
   currentFontClass: string;
   fontSize: number;
   lineHeight: number;
+  textAlign: TextAlignMode;
   processedChapterTitle: string;
   processedParagraphs: string[];
   isLoading: boolean;
-  ttsIsPlaying: boolean;
-  ttsCurrentParagraphIdx: number;
   currentChapterIdx: number;
   totalChapters: number;
   onScroll: () => void;
@@ -27,15 +28,15 @@ interface ContinuousViewportProps {
 
 export const ContinuousViewport: React.FC<ContinuousViewportProps> = ({
   scrollContainerRef,
+  paddingClass,
   maxWidthClass,
   currentFontClass,
   fontSize,
   lineHeight,
+  textAlign,
   processedChapterTitle,
   processedParagraphs,
   isLoading,
-  ttsIsPlaying,
-  ttsCurrentParagraphIdx,
   currentChapterIdx,
   totalChapters,
   onScroll,
@@ -48,13 +49,15 @@ export const ContinuousViewport: React.FC<ContinuousViewportProps> = ({
       ref={scrollContainerRef}
       onScroll={onScroll}
       onClick={(e) => {
+        const selection = window.getSelection();
+        if (selection && selection.toString().trim().length > 0) return;
         const y = e.clientY;
         const h = window.innerHeight;
         if (y > h * 0.25 && y < h * 0.75) {
           onToggleToolbar();
         }
       }}
-      className="flex-1 overflow-y-auto px-4 sm:px-8 reader-continuous-padding select-text"
+      className={`flex-1 overflow-y-auto ${paddingClass} reader-continuous-padding select-text`}
     >
       <div className={`mx-auto w-full ${maxWidthClass}`}>
         {isLoading ? (
@@ -75,25 +78,17 @@ export const ContinuousViewport: React.FC<ContinuousViewportProps> = ({
               {processedChapterTitle}
             </h2>
 
-            {processedParagraphs.map((para, i) => {
-              const isSpeakingThis = ttsIsPlaying && ttsCurrentParagraphIdx === i;
-              return (
-                <p
-                  key={i}
-                  className={`novel-content-paragraph leading-relaxed mb-4 text-justify transition-all duration-200 rounded-lg ${
-                    isSpeakingThis
-                      ? "bg-[var(--accent-color)]/20 px-2 py-1 shadow-sm font-medium"
-                      : ""
-                  }`}
-                  style={{ textIndent: isSpeakingThis ? "0" : "2em" }}
-                >
-                  {isSpeakingThis && (
-                    <Volume2 className="w-4 h-4 inline-block mr-1.5 text-[var(--accent-color)] animate-pulse align-middle" />
-                  )}
-                  {para}
-                </p>
-              );
-            })}
+            {processedParagraphs.map((para, i) => (
+              <p
+                key={i}
+                className={`novel-content-paragraph leading-relaxed mb-4 ${
+                  textAlign === "justify" ? "text-justify" : "text-left"
+                }`}
+                style={{ textIndent: "2em" }}
+              >
+                {para}
+              </p>
+            ))}
 
             {/* Chapter Navigation Buttons in Continuous Mode */}
             <div className="pt-8 pb-12 flex items-center justify-between border-t border-[var(--border-color)] mt-8 gap-3">

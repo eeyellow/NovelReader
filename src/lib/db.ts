@@ -3,12 +3,10 @@ import fs from "fs";
 import path from "path";
 import { parseSafeTime } from "./format";
 
-// Define storage directory: can be overridden via DATA_DIR environment variable (e.g. for Docker / NAS mount)
 function resolveDataDir(): string {
   if (process.env.DATA_DIR) {
     return process.env.DATA_DIR;
   }
-  // If running inside .next/standalone, always point to the external root project data directory
   if (process.cwd().includes(".next")) {
     return path.resolve(process.cwd(), "../../data");
   }
@@ -18,12 +16,12 @@ function resolveDataDir(): string {
 const DATA_DIR = resolveDataDir();
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_PATH = path.join(DATA_DIR, "novel_reader.db");
+const DEFAULT_USER_ID = "default_user";
 
 let dbInstance: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (!dbInstance) {
-    // Ensure directories exist
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
@@ -31,20 +29,17 @@ export function getDb(): Database.Database {
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
     }
 
-    // Initialize SQLite database with 10s retry timeout to prevent SQLITE_BUSY
     dbInstance = new Database(DB_PATH, {
       timeout: 10000,
     });
 
-    // Set busy timeout and foreign keys
     dbInstance.pragma("busy_timeout = 10000");
     dbInstance.pragma("foreign_keys = ON");
 
-    // Attempt WAL mode, fallback to DELETE mode if on network share / NAS without shared memory
     const preferredJournalMode = process.env.SQLITE_JOURNAL_MODE || "WAL";
     try {
       dbInstance.pragma(`journal_mode = ${preferredJournalMode}`);
-    } catch (e) {
+    } catch {
       try {
         dbInstance.pragma("journal_mode = DELETE");
       } catch (err) {
@@ -52,16 +47,11 @@ export function getDb(): Database.Database {
       }
     }
 
-    console.log(`[DB] SQLite initialized at: ${DB_PATH}`);
-    console.log(`[DB] Uploads directory at: ${UPLOADS_DIR}`);
-
-    // Register graceful shutdown to checkpoint WAL and close database safely
     if (typeof process !== "undefined" && !process.env.__DB_SHUTDOWN_REGISTERED) {
       process.env.__DB_SHUTDOWN_REGISTERED = "1";
       const flushAndClose = () => {
         if (dbInstance) {
           try {
-            console.log("[DB] Gracefully checkpointing and closing SQLite database...");
             dbInstance.pragma("wal_checkpoint(TRUNCATE)");
             dbInstance.close();
           } catch (err) {
@@ -75,26 +65,14 @@ export function getDb(): Database.Database {
       process.once("beforeExit", flushAndClose);
     }
 
-    // Initialize Schema lazily
     dbInstance.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        name TEXT NOT NULL,
-        avatar TEXT,
-        role TEXT DEFAULT 'user',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
       CREATE TABLE IF NOT EXISTS books (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         file_name TEXT NOT NULL,
         file_size INTEGER NOT NULL,
         total_chars INTEGER NOT NULL,
-        uploader_id TEXT DEFAULT 'default_user',
-        uploader_name TEXT DEFAULT '系統',
+        chapters_json TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -113,110 +91,31 @@ export function getDb(): Database.Database {
         PRIMARY KEY (user_id, book_id),
         FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
       );
-
-      CREATE TABLE IF NOT EXISTS bookmarks (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL DEFAULT 'default_user',
-        book_id TEXT NOT NULL,
-        char_offset INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        preview_text TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
-      );
     `);
 
-    // Ensure default user exists
-    dbInstance
-      .prepare(
-        `INSERT OR IGNORE INTO users (id, email, name, role) VALUES ('default_user', 'admin@local', '預設管理員', 'admin')`
-      )
-      .run();
-
-    // Migrations for existing databases
-    // 1. Ensure books table has uploader_id, uploader_name, chapters_json
+    // 向下相容舊資料庫欄位遷移
     try {
       const bookColumns = dbInstance
         .prepare("PRAGMA table_info(books)")
         .all() as Array<{ name: string }>;
       const bookColNames = new Set(bookColumns.map((c) => c.name));
-      if (!bookColNames.has("uploader_id")) {
-        console.log("[DB Migration] Adding uploader_id to books table...");
-        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_id TEXT DEFAULT 'default_user'");
-      }
-      if (!bookColNames.has("uploader_name")) {
-        console.log("[DB Migration] Adding uploader_name to books table...");
-        dbInstance.exec("ALTER TABLE books ADD COLUMN uploader_name TEXT DEFAULT '系統'");
-      }
       if (!bookColNames.has("chapters_json")) {
-        console.log("[DB Migration] Adding chapters_json to books table...");
         dbInstance.exec("ALTER TABLE books ADD COLUMN chapters_json TEXT");
       }
     } catch (e) {
       console.warn("[DB Migration] books table migration notice:", e);
     }
 
-    // 2. Ensure bookmarks table has user_id column
     try {
-      const bookmarkColumns = dbInstance
-        .prepare("PRAGMA table_info(bookmarks)")
-        .all() as Array<{ name: string }>;
-      const bookmarkColNames = new Set(bookmarkColumns.map((c) => c.name));
-      if (!bookmarkColNames.has("user_id")) {
-        console.log("[DB Migration] Adding user_id to bookmarks table...");
-        dbInstance.exec("ALTER TABLE bookmarks ADD COLUMN user_id TEXT DEFAULT 'default_user'");
-        dbInstance.exec(
-          "CREATE INDEX IF NOT EXISTS idx_bookmarks_user_book ON bookmarks(user_id, book_id)"
-        );
-      }
-    } catch (e) {
-      console.warn("[DB Migration] bookmarks table migration notice:", e);
-    }
-
-    // 3. Migrate reading_progress to composite key (user_id, book_id) safely
-    try {
-      const progressColumns = dbInstance
-        .prepare("PRAGMA table_info(reading_progress)")
-        .all() as Array<{ name: string; pk: number }>;
-      const hasUserIdInProgress = progressColumns.some((c) => c.name === "user_id");
-      if (!hasUserIdInProgress) {
-        console.log(
-          "[DB Migration] Upgrading reading_progress table to composite primary key (user_id, book_id)..."
-        );
-        const progColNames = new Set(progressColumns.map((c) => c.name));
-        const chIdx = progColNames.has("chapter_index") ? "chapter_index" : "NULL";
-        const pIdx = progColNames.has("page_index") ? "page_index" : "NULL";
-        const pRatio = progColNames.has("page_ratio") ? "page_ratio" : "NULL";
-        const totPages = progColNames.has("total_pages") ? "total_pages" : "NULL";
-
-        dbInstance.exec(`
-          CREATE TABLE IF NOT EXISTS reading_progress_v2 (
-            user_id TEXT NOT NULL DEFAULT 'default_user',
-            book_id TEXT NOT NULL,
-            char_offset INTEGER NOT NULL DEFAULT 0,
-            percentage REAL NOT NULL DEFAULT 0.0,
-            device_name TEXT,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            chapter_index INTEGER,
-            page_index INTEGER,
-            page_ratio REAL,
-            total_pages INTEGER,
-            PRIMARY KEY (user_id, book_id),
-            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
-          );
-          INSERT OR IGNORE INTO reading_progress_v2 (user_id, book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
-          SELECT 'default_user', book_id, char_offset, percentage, device_name, updated_at, ${chIdx}, ${pIdx}, ${pRatio}, ${totPages}
-          FROM reading_progress;
-          DROP TABLE reading_progress;
-          ALTER TABLE reading_progress_v2 RENAME TO reading_progress;
-        `);
-      }
-
-      // Check remaining reading_progress columns if needed
       const refreshedProgressCols = dbInstance
         .prepare("PRAGMA table_info(reading_progress)")
         .all() as Array<{ name: string }>;
       const progColNames = new Set(refreshedProgressCols.map((c) => c.name));
+      if (!progColNames.has("user_id")) {
+        dbInstance.exec(
+          "ALTER TABLE reading_progress ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'"
+        );
+      }
       if (!progColNames.has("chapter_index")) {
         dbInstance.exec("ALTER TABLE reading_progress ADD COLUMN chapter_index INTEGER");
       }
@@ -236,24 +135,12 @@ export function getDb(): Database.Database {
   return dbInstance;
 }
 
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  avatar?: string;
-  role: "admin" | "user";
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Book {
   id: string;
   title: string;
   file_name: string;
   file_size: number;
   total_chars: number;
-  uploader_id?: string;
-  uploader_name?: string;
   created_at: string;
   updated_at: string;
   chapters_json?: string;
@@ -268,7 +155,6 @@ export interface Book {
 }
 
 export interface ReadingProgress {
-  user_id?: string;
   book_id: string;
   char_offset: number;
   percentage: number;
@@ -280,65 +166,8 @@ export interface ReadingProgress {
   total_pages?: number;
 }
 
-export interface Bookmark {
-  id: string;
-  user_id?: string;
-  book_id: string;
-  char_offset: number;
-  title: string;
-  preview_text: string;
-  created_at: string;
-}
-
-// User Model
-export const UserModel = {
-  getById(id: string): User | undefined {
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM users WHERE id = ?");
-    return stmt.get(id) as User | undefined;
-  },
-
-  getByEmail(email: string): User | undefined {
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM users WHERE email = ?");
-    return stmt.get(email) as User | undefined;
-  },
-
-  createOrUpdate(user: {
-    id: string;
-    email: string;
-    name: string;
-    avatar?: string;
-    role?: "admin" | "user";
-  }): User {
-    const db = getDb();
-    const stmt = db.prepare(`
-      INSERT INTO users (id, email, name, avatar, role)
-      VALUES (@id, @email, @name, @avatar, COALESCE(@role, 'user'))
-      ON CONFLICT(id) DO UPDATE SET
-        email = excluded.email,
-        name = excluded.name,
-        avatar = COALESCE(excluded.avatar, users.avatar),
-        updated_at = CURRENT_TIMESTAMP
-    `);
-    stmt.run({
-      ...user,
-      avatar: user.avatar || null,
-      role: user.role || "user",
-    });
-    return this.getById(user.id)!;
-  },
-
-  getAll(): User[] {
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM users ORDER BY created_at ASC");
-    return stmt.all() as User[];
-  },
-};
-
-// Database helper functions for Books
 export const BookModel = {
-  getAll(userId: string = "default_user"): Book[] {
+  getAll(): Book[] {
     const db = getDb();
     const stmt = db.prepare(`
       SELECT 
@@ -355,10 +184,10 @@ export const BookModel = {
       LEFT JOIN reading_progress p ON b.id = p.book_id AND p.user_id = ?
       ORDER BY COALESCE(p.updated_at, b.created_at) DESC
     `);
-    return stmt.all(userId) as Book[];
+    return stmt.all(DEFAULT_USER_ID) as Book[];
   },
 
-  getById(id: string, userId: string = "default_user"): Book | undefined {
+  getById(id: string): Book | undefined {
     const db = getDb();
     const stmt = db.prepare(`
       SELECT 
@@ -375,7 +204,7 @@ export const BookModel = {
       LEFT JOIN reading_progress p ON b.id = p.book_id AND p.user_id = ?
       WHERE b.id = ?
     `);
-    return stmt.get(userId, id) as Book | undefined;
+    return stmt.get(DEFAULT_USER_ID, id) as Book | undefined;
   },
 
   create(book: {
@@ -384,34 +213,27 @@ export const BookModel = {
     file_name: string;
     file_size: number;
     total_chars: number;
-    uploader_id?: string;
-    uploader_name?: string;
     chapters_json?: string;
   }) {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO books (id, title, file_name, file_size, total_chars, uploader_id, uploader_name, chapters_json)
-      VALUES (@id, @title, @file_name, @file_size, @total_chars, @uploader_id, @uploader_name, @chapters_json)
+      INSERT INTO books (id, title, file_name, file_size, total_chars, chapters_json)
+      VALUES (@id, @title, @file_name, @file_size, @total_chars, @chapters_json)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         file_name = excluded.file_name,
         file_size = excluded.file_size,
         total_chars = excluded.total_chars,
-        uploader_id = COALESCE(excluded.uploader_id, books.uploader_id),
-        uploader_name = COALESCE(excluded.uploader_name, books.uploader_name),
         chapters_json = COALESCE(excluded.chapters_json, books.chapters_json),
         updated_at = CURRENT_TIMESTAMP
     `);
     const result = stmt.run({
       ...book,
-      uploader_id: book.uploader_id || "default_user",
-      uploader_name: book.uploader_name || "系統",
       chapters_json: book.chapters_json || null,
     });
     try {
       db.pragma("wal_checkpoint(PASSIVE)");
-    } catch (e) {}
-    console.log(`[DB] Book persisted: "${book.title}" (${book.id}) to ${DB_PATH}`);
+    } catch {}
     return result;
   },
 
@@ -436,6 +258,7 @@ export const BookModel = {
       }
     }
     const db = getDb();
+    db.prepare("DELETE FROM reading_progress WHERE book_id = ?").run(id);
     const stmt = db.prepare("DELETE FROM books WHERE id = ?");
     return stmt.run(id);
   },
@@ -452,12 +275,12 @@ export const BookModel = {
 };
 
 export const ProgressModel = {
-  get(bookId: string, userId: string = "default_user"): ReadingProgress | undefined {
+  get(bookId: string): ReadingProgress | undefined {
     const db = getDb();
     const stmt = db.prepare(
       "SELECT * FROM reading_progress WHERE user_id = ? AND book_id = ?"
     );
-    return stmt.get(userId, bookId) as ReadingProgress | undefined;
+    return stmt.get(DEFAULT_USER_ID, bookId) as ReadingProgress | undefined;
   },
 
   upsert(
@@ -471,8 +294,7 @@ export const ProgressModel = {
       page_index?: number;
       page_ratio?: number;
       total_pages?: number;
-    },
-    userId: string = "default_user"
+    }
   ): { updated: boolean; currentProgress: ReadingProgress } {
     const db = getDb();
     const now = clientUpdatedAt || new Date().toISOString();
@@ -481,14 +303,11 @@ export const ProgressModel = {
     const pRatio = extra?.page_ratio ?? null;
     const totPages = extra?.total_pages ?? null;
 
-    // 確保書籍存在於 books 資料表，防禦性避免 SQLite FOREIGN KEY 外鍵約束拋出異常
     const book = BookModel.getById(bookId);
     if (!book) {
-      console.warn(`[ProgressModel] 跳過進度儲存：伺服器資料庫不存在書籍 ID "${bookId}"`);
       return {
         updated: false,
         currentProgress: {
-          user_id: userId,
           book_id: bookId,
           char_offset: charOffset,
           percentage,
@@ -502,13 +321,12 @@ export const ProgressModel = {
       };
     }
 
-    const existing = this.get(bookId, userId);
+    const existing = this.get(bookId);
 
     if (existing) {
       const existingTime = parseSafeTime(existing.updated_at);
       const clientTime = parseSafeTime(now);
 
-      // LWW: If incoming progress is newer or equal (容許 1 秒以內的網路時鐘誤差)
       if (clientTime >= existingTime - 1000) {
         const nextChIdx = chIdx !== null ? chIdx : (existing.chapter_index ?? null);
         const isChapterSwitched =
@@ -541,13 +359,12 @@ export const ProgressModel = {
           nextPIdx,
           nextPRatio,
           nextTotPages,
-          userId,
+          DEFAULT_USER_ID,
           bookId
         );
         return {
           updated: true,
           currentProgress: {
-            user_id: userId,
             book_id: bookId,
             char_offset: charOffset,
             percentage,
@@ -559,84 +376,44 @@ export const ProgressModel = {
             total_pages: nextTotPages ?? undefined,
           },
         };
-      } else {
-        // Server has newer record (Conflict)
-        return {
-          updated: false,
-          currentProgress: existing,
-        };
       }
-    } else {
-      const stmt = db.prepare(`
-        INSERT INTO reading_progress (user_id, book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      stmt.run(userId, bookId, charOffset, percentage, deviceName, now, chIdx, pIdx, pRatio, totPages);
       return {
-        updated: true,
-        currentProgress: {
-          user_id: userId,
-          book_id: bookId,
-          char_offset: charOffset,
-          percentage,
-          device_name: deviceName,
-          updated_at: now,
-          chapter_index: chIdx ?? undefined,
-          page_index: pIdx ?? undefined,
-          page_ratio: pRatio ?? undefined,
-          total_pages: totPages ?? undefined,
-        },
+        updated: false,
+        currentProgress: existing,
       };
     }
-  },
-};
-
-export const BookmarkModel = {
-  getAllByBookId(bookId: string, userId: string = "default_user"): Bookmark[] {
-    const db = getDb();
-    const stmt = db.prepare(`
-      SELECT * FROM bookmarks 
-      WHERE user_id = ? AND book_id = ?
-      ORDER BY char_offset ASC, created_at DESC
-    `);
-    return stmt.all(userId, bookId) as Bookmark[];
-  },
-
-  create(bookmark: {
-    id: string;
-    book_id: string;
-    char_offset: number;
-    title: string;
-    preview_text: string;
-    user_id?: string;
-  }) {
-    const db = getDb();
-    const book = BookModel.getById(bookmark.book_id);
-    if (!book) {
-      console.warn(`[BookmarkModel] 跳過書籤儲存：伺服器資料庫不存在書籍 ID "${bookmark.book_id}"`);
-      return null;
-    }
 
     const stmt = db.prepare(`
-      INSERT OR REPLACE INTO bookmarks (id, user_id, book_id, char_offset, title, preview_text)
-      VALUES (@id, @user_id, @book_id, @char_offset, @title, @preview_text)
+      INSERT INTO reading_progress (user_id, book_id, char_offset, percentage, device_name, updated_at, chapter_index, page_index, page_ratio, total_pages)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    return stmt.run({
-      ...bookmark,
-      user_id: bookmark.user_id || "default_user",
-    });
-  },
-
-  delete(id: string, userId?: string) {
-    const db = getDb();
-    if (userId) {
-      const stmt = db.prepare("DELETE FROM bookmarks WHERE id = ? AND user_id = ?");
-      return stmt.run(id, userId);
-    }
-    const stmt = db.prepare("DELETE FROM bookmarks WHERE id = ?");
-    return stmt.run(id);
+    stmt.run(
+      DEFAULT_USER_ID,
+      bookId,
+      charOffset,
+      percentage,
+      deviceName,
+      now,
+      chIdx,
+      pIdx,
+      pRatio,
+      totPages
+    );
+    return {
+      updated: true,
+      currentProgress: {
+        book_id: bookId,
+        char_offset: charOffset,
+        percentage,
+        device_name: deviceName,
+        updated_at: now,
+        chapter_index: chIdx ?? undefined,
+        page_index: pIdx ?? undefined,
+        page_ratio: pRatio ?? undefined,
+        total_pages: totPages ?? undefined,
+      },
+    };
   },
 };
 
 export { DATA_DIR, UPLOADS_DIR, DB_PATH };
-

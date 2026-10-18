@@ -2,7 +2,7 @@
 
 /**
  * @file page.tsx
- * @description 閱讀器核心頁面容器組件，負責整合資料載入、排版設定、分頁導航、語音朗讀與手勢互動
+ * @description 閱讀器核心頁面容器組件，整合資料載入、排版設定、分頁與連續滾動導航
  */
 
 import React, {
@@ -14,40 +14,19 @@ import React, {
 } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { LocalStore } from "@/lib/idb";
-import { getCachedUserId } from "@/lib/clientAuth";
 import { extractChapters, Chapter, findCurrentChapter } from "@/lib/parser";
 import { convertToTraditional, convertToSimplified } from "@/lib/chinese";
-import { GestureAction, GestureConfig } from "@/lib/gesture/types";
-import {
-  DEFAULT_GESTURE_CONFIG,
-  loadGestureConfig,
-} from "@/lib/gesture/defaultGestures";
-import { useMouseGesture } from "@/hooks/useMouseGesture";
 import { useTouchGesture } from "@/hooks/useTouchGesture";
 import { useWakeLock } from "@/hooks/useWakeLock";
-import { useTTS } from "@/hooks/useTTS";
 import { useReaderSettings } from "@/hooks/useReaderSettings";
-import { useReaderBookmarks } from "@/hooks/useReaderBookmarks";
-import { useReaderSearch } from "@/hooks/useReaderSearch";
 import { useReaderPagination } from "@/hooks/useReaderPagination";
 import { parseSafeTime } from "@/lib/format";
-import {
-  syncProgress,
-  flushAllSyncTasks,
-  pushLocalProgressRecord,
-  PROGRESS_CONFLICT_EVENT,
-  type ServerProgress,
-} from "@/lib/sync";
-import { GestureOverlay } from "@/components/gesture/GestureOverlay";
-import { GestureSettingsModal } from "@/components/gesture/GestureSettingsModal";
 import { ReaderHeader } from "@/components/reader/ReaderHeader";
 import { ReaderFooter } from "@/components/reader/ReaderFooter";
 import { PaginatedViewport } from "@/components/reader/PaginatedViewport";
 import { ContinuousViewport } from "@/components/reader/ContinuousViewport";
 import { TOCDrawer } from "@/components/reader/TOCDrawer";
 import { ReaderSettingsDrawer } from "@/components/reader/ReaderSettingsDrawer";
-import { TTSPlayerWidget } from "@/components/reader/TTSPlayerWidget";
-import { ReaderSearchModal } from "@/components/reader/ReaderSearchModal";
 import { ReaderToasts } from "@/components/reader/ReaderToasts";
 
 export default function ReaderPage() {
@@ -68,11 +47,6 @@ export default function ReaderPage() {
   const [showTOC, setShowTOC] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showTTSPlayer, setShowTTSPlayer] = useState(false);
-  const [showGestureModal, setShowGestureModal] = useState(false);
-  const [gestureConfig, setGestureConfig] = useState<GestureConfig>(
-    DEFAULT_GESTURE_CONFIG,
-  );
 
   const lastTouchActionTime = useRef<number>(0);
 
@@ -142,153 +116,10 @@ export default function ReaderPage() {
     readMode: settings.readMode,
   });
 
-  // 書籤管理 Hook
-  const bookmarkHook = useReaderBookmarks({
-    bookId,
-    chapters,
-    currentChapter,
-    currentChapterParagraphs,
-    currentOffset: pagination.currentOffset,
-    currentPage: pagination.currentPage,
-    currentChapterIdx,
-    onJumpToOffset: pagination.jumpToOffset,
-    onActivity: onUserActivity,
-  });
-
-  // 書內全文檢索 Hook
-  const searchHook = useReaderSearch({
-    fullText,
-    chapters,
-    onJumpToResult: (res) => {
-      pagination.jumpToOffset(res.charOffset, res.chapterIndex);
-    },
-    onActivity: onUserActivity,
-  });
-
-  // Web Speech API TTS 語音朗讀 Hook
-  const tts = useTTS({
-    onParagraphChange: () => {
-      onUserActivity();
-    },
-    onPageEnd: () => {
-      if (pagination.currentPage < pagination.totalPages - 1) {
-        pagination.goToNextPage();
-      } else if (currentChapterIdx < chapters.length - 1) {
-        pagination.goToNextChapter();
-      } else {
-        tts.stop();
-      }
-    },
-  });
-
-  // 離線狀態監聽與恢復連線跨裝置進度自動同步
-  const [isOffline, setIsOffline] = useState(false);
-
-  const checkServerProgressConflict = useCallback(async () => {
-    if (!bookId || typeof window === "undefined" || !navigator.onLine) return;
-    try {
-      const currentUserId = getCachedUserId();
-      const localProg = await LocalStore.getLocalProgress(
-        bookId,
-        currentUserId,
-      );
-      const targetOffset = pagination.currentOffset;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2500);
-
-      const progRes = await fetch(
-        `/api/progress?bookId=${encodeURIComponent(bookId)}&userId=${encodeURIComponent(currentUserId)}`,
-        { signal: controller.signal },
-      );
-      clearTimeout(timeoutId);
-
-      if (progRes.ok) {
-        const progData = await progRes.json();
-        if (progData.success) {
-          const sProg = progData.progress;
-          if (sProg) {
-            const sTime = parseSafeTime(sProg.updated_at);
-            const lTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
-
-            if (
-              sTime > lTime + 3000 &&
-              Math.abs(sProg.char_offset - targetOffset) > 300
-            ) {
-              pagination.setConflictPrompt({
-                serverOffset: sProg.char_offset,
-                serverPercentage: sProg.percentage,
-                deviceName: sProg.device_name || "其他裝置",
-                updatedAt: sProg.updated_at,
-                chapterIndex: sProg.chapter_index ?? undefined,
-                pageIndex: sProg.page_index ?? undefined,
-                pageRatio: sProg.page_ratio ?? undefined,
-                totalPages: sProg.total_pages ?? undefined,
-              });
-            }
-          } else if (localProg && localProg.char_offset > 0) {
-            // 伺服器端尚無此書籍進度，以本機既有真實時間戳補同步至伺服器
-            pushLocalProgressRecord(localProg).catch(console.warn);
-          }
-        }
-      }
-    } catch (e) {}
-  }, [bookId, pagination]);
-
-  useEffect(() => {
-    const handleOnline = () => {
-      setIsOffline(false);
-      // 連線恢復時依序同步待上傳小說與本機未同步進度（保留真實時間戳，絕不覆蓋雲端較新進度）
-      flushAllSyncTasks()
-        .then(() => checkServerProgressConflict())
-        .catch(console.warn);
-    };
-
-    const handleOffline = () => setIsOffline(true);
-    setIsOffline(!navigator.onLine);
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && navigator.onLine) {
-        checkServerProgressConflict();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    const handleConflictEvent = (e: Event) => {
-      const sProg = (e as CustomEvent<ServerProgress>).detail;
-      if (!sProg || sProg.book_id !== bookId) return;
-      const targetOffset = pagination.currentOffset;
-      if (Math.abs(sProg.char_offset - targetOffset) > 300) {
-        pagination.setConflictPrompt({
-          serverOffset: sProg.char_offset,
-          serverPercentage: sProg.percentage,
-          deviceName: sProg.device_name || "其他裝置",
-          updatedAt: sProg.updated_at,
-          chapterIndex: sProg.chapter_index ?? undefined,
-          pageIndex: sProg.page_index ?? undefined,
-          pageRatio: sProg.page_ratio ?? undefined,
-          totalPages: sProg.total_pages ?? undefined,
-        });
-      }
-    };
-    window.addEventListener(PROGRESS_CONFLICT_EVENT, handleConflictEvent);
-
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener(PROGRESS_CONFLICT_EVENT, handleConflictEvent);
-    };
-  }, [bookId, checkServerProgressConflict, pagination]);
-
   useEffect(() => {
     if (!bookId) return;
 
-    // 紀錄最後閱讀書籍 ID 供 PWA 開啟時無縫接軌
     localStorage.setItem("novel_reader_last_book_id", bookId);
-    setGestureConfig(loadGestureConfig());
 
     const loadBookData = async () => {
       setIsLoading(true);
@@ -296,76 +127,75 @@ export default function ReaderPage() {
       let bookTitle = "未知小說";
       let bookChars = 0;
       let serverChapters: Chapter[] | null = null;
+      let serverProgress: any = null;
 
-      // 1. 優先從本機 IndexedDB 快取讀取
-      try {
-        const cached = await LocalStore.getBookContent(bookId);
-        if (
-          cached &&
-          cached.content &&
-          (!cached.content.startsWith('{"') ||
-            !cached.content.includes('"success":false'))
-        ) {
-          bookText = cached.content;
-          bookTitle = cached.title;
-          bookChars = cached.total_chars;
-        }
-      } catch (e) {
-        console.warn("IndexedDB read error:", e);
+      // 1. 嘗試向伺服器取得最新書本資訊與進度，並檢查本機快取是否已有內文
+      const cached = await LocalStore.getBookContent(bookId);
+      if (cached && cached.content) {
+        bookText = cached.content;
+        bookTitle = cached.title;
+        bookChars = cached.total_chars;
       }
 
-      // 2. 若快取不存在，才發送網路請求向伺服器取得
+      try {
+        const metaRes = await fetch(`/api/books/${encodeURIComponent(bookId)}`, {
+          cache: "no-store",
+        });
+
+        if (metaRes.ok) {
+          const metaData = await metaRes.json();
+          if (metaData.book) {
+            bookTitle = metaData.book.title || bookTitle;
+            if (typeof metaData.book.char_offset === "number") {
+              serverProgress = {
+                char_offset: metaData.book.char_offset,
+                percentage: metaData.book.percentage || 0,
+                device_name: metaData.book.last_device || "雲端同步",
+                updated_at: metaData.book.progress_updated_at,
+                chapter_index: metaData.book.chapter_index,
+                page_index: metaData.book.page_index,
+                page_ratio: metaData.book.page_ratio,
+                total_pages: metaData.book.total_pages,
+              };
+            }
+          }
+          if (Array.isArray(metaData.chapters) && metaData.chapters.length > 0) {
+            serverChapters = metaData.chapters;
+          }
+        } else if (metaRes.status === 404) {
+          localStorage.removeItem("novel_reader_last_book_id");
+          await LocalStore.deleteBookContent(bookId);
+          alert("找不到該小說（可能已被刪除）。");
+          router.push("/?from=reader");
+          return;
+        }
+      } catch (err) {
+        console.warn("取得書籍元資料失敗，嘗試使用本機快取:", err);
+      }
+
+      // 2. 若本機尚未快取內文，從伺服器下載內文並存入輕量快取
       if (!bookText) {
         try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-          const [metaRes, contentRes] = await Promise.all([
-            fetch(`/api/books/${bookId}`, { signal: controller.signal }),
-            fetch(`/api/books/${bookId}/content`, {
-              signal: controller.signal,
-            }),
-          ]);
-          clearTimeout(timeoutId);
-
-          if (metaRes.ok && contentRes.ok) {
-            const metaData = await metaRes.json();
-            const rawContent = await contentRes.text();
-
-            if (
-              !rawContent ||
-              (rawContent.startsWith('{"') &&
-                rawContent.includes('"success":false'))
-            ) {
-              throw new Error("取得小說內文格式異常");
-            }
-
-            bookText = rawContent;
-            bookTitle = metaData.book?.title || "未命名小說";
-            bookChars = bookText.length;
-
-            if (
-              Array.isArray(metaData.chapters) &&
-              metaData.chapters.length > 0
-            ) {
-              serverChapters = metaData.chapters;
-            }
-
-            await LocalStore.saveBookContent(
-              bookId,
-              bookTitle,
-              bookText,
-              bookChars,
-            );
-          } else {
-            throw new Error("無法讀取小說資料");
+          const contentRes = await fetch(
+            `/api/books/${encodeURIComponent(bookId)}/content`
+          );
+          if (!contentRes.ok) {
+            throw new Error("無法讀取小說內容");
           }
+          const rawContent = await contentRes.text();
+          if (
+            !rawContent ||
+            (rawContent.startsWith('{"') && rawContent.includes('"success":false'))
+          ) {
+            throw new Error("取得小說內文格式異常");
+          }
+          bookText = rawContent;
+          bookChars = bookText.length;
+          await LocalStore.saveBookContent(bookId, bookTitle, bookText, bookChars);
         } catch (err) {
           console.error(err);
-          if (typeof window !== "undefined") {
-            localStorage.removeItem("novel_reader_last_book_id");
-          }
-          alert("無法載入小說，請確認網路連線或該書籍已快取至本機。");
+          localStorage.removeItem("novel_reader_last_book_id");
+          alert("無法載入小說，請確認網路連線正常。");
           router.push("/?from=reader");
           return;
         }
@@ -375,58 +205,81 @@ export default function ReaderPage() {
       setFullText(bookText);
       setTotalChars(bookChars);
 
-      // 大長篇優化：優先從本機 IndexedDB 快取讀取章節索引，達成 0ms 瞬間開書
-      let parsedChapters: Chapter[] | null = null;
-      try {
+      // 3. 取得或解析章節清單
+      let parsedChapters: Chapter[] | null = serverChapters;
+      if (!parsedChapters || parsedChapters.length === 0) {
         parsedChapters = await LocalStore.getChapters(bookId);
-      } catch (e) {
-        console.warn("讀取本機章節快取失敗:", e);
       }
-
-      if (!parsedChapters && serverChapters && serverChapters.length > 0) {
-        parsedChapters = serverChapters;
-        LocalStore.saveChapters(bookId, parsedChapters).catch(console.warn);
-      }
-
       if (!parsedChapters || parsedChapters.length === 0) {
         parsedChapters = extractChapters(bookText);
-        LocalStore.saveChapters(bookId, parsedChapters).catch(console.warn);
       }
-
+      LocalStore.saveChapters(bookId, parsedChapters).catch(() => {});
       setChapters(parsedChapters);
 
-      bookmarkHook.loadBookmarks(bookId);
+      // 4. 比對伺服器進度與本機進度，選取最新者直接還原（無煩人的衝突彈窗）
+      const localProg = await LocalStore.getLocalProgress(bookId);
+      const serverTime = serverProgress ? parseSafeTime(serverProgress.updated_at) : 0;
+      const localTime = localProg ? parseSafeTime(localProg.updated_at) : 0;
 
-      // 3. 取得本機閱讀進度並立刻完成畫面載入
+      const activeProg = serverTime >= localTime && serverProgress ? serverProgress : localProg;
+
+      if (serverTime > localTime && serverProgress) {
+        LocalStore.saveLocalProgress(
+          bookId,
+          serverProgress.char_offset,
+          serverProgress.percentage,
+          serverProgress.device_name || "雲端同步",
+          serverProgress.updated_at,
+          {
+            chapter_index: serverProgress.chapter_index,
+            page_index: serverProgress.page_index,
+            page_ratio: serverProgress.page_ratio,
+            total_pages: serverProgress.total_pages,
+          }
+        ).catch(() => {});
+      } else if (localTime > serverTime + 1000 && localProg && localProg.char_offset > 0) {
+        fetch("/api/progress", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            book_id: bookId,
+            char_offset: localProg.char_offset,
+            percentage: localProg.percentage,
+            device_name: localProg.device_name,
+            updated_at: localProg.updated_at,
+            chapter_index: localProg.chapter_index,
+            page_index: localProg.page_index,
+            page_ratio: localProg.page_ratio,
+            total_pages: localProg.total_pages,
+          }),
+        }).catch(() => {});
+      }
+
       let targetOffset = 0;
       let targetChapterIdx = 0;
-      let targetPageRatio: number | null = null;
-      let targetPageIndex: number | null = null;
-      let targetTotalPages: number | null = null;
+      let targetPageRatio: number | undefined;
+      let targetPageIndex: number | undefined;
+      let targetTotalPages: number | undefined;
 
-      const currentUserId = getCachedUserId();
-      const localProg = await LocalStore.getLocalProgress(
-        bookId,
-        currentUserId,
-      );
-      if (localProg) {
-        targetOffset = localProg.char_offset || 0;
+      if (activeProg) {
+        targetOffset = activeProg.char_offset || 0;
         if (
-          typeof localProg.chapter_index === "number" &&
-          localProg.chapter_index >= 0
+          typeof activeProg.chapter_index === "number" &&
+          activeProg.chapter_index >= 0 &&
+          activeProg.chapter_index < parsedChapters.length
         ) {
-          targetChapterIdx = localProg.chapter_index;
+          targetChapterIdx = activeProg.chapter_index;
         } else {
           targetChapterIdx = findCurrentChapter(parsedChapters, targetOffset);
         }
-        if (typeof localProg.page_ratio === "number") {
-          targetPageRatio = localProg.page_ratio;
+        if (typeof activeProg.page_ratio === "number") {
+          targetPageRatio = activeProg.page_ratio;
         }
-        if (typeof localProg.page_index === "number") {
-          targetPageIndex = localProg.page_index;
+        if (typeof activeProg.page_index === "number") {
+          targetPageIndex = activeProg.page_index;
         }
-        if (typeof localProg.total_pages === "number") {
-          targetTotalPages = localProg.total_pages;
+        if (typeof activeProg.total_pages === "number") {
+          targetTotalPages = activeProg.total_pages;
         }
       }
 
@@ -434,13 +287,10 @@ export default function ReaderPage() {
       pagination.restoreProgress({
         offset: targetOffset,
         chapterIndex: targetChapterIdx,
-        pageIndex: targetPageIndex ?? undefined,
-        pageRatio: targetPageRatio ?? undefined,
-        totalPages: targetTotalPages ?? undefined,
+        pageIndex: targetPageIndex,
+        pageRatio: targetPageRatio,
+        totalPages: targetTotalPages,
       });
-
-      // 4. 背景非阻塞檢查雲端進度衝突（不卡頓閱讀畫面）
-      checkServerProgressConflict();
     };
 
     loadBookData();
@@ -452,7 +302,6 @@ export default function ReaderPage() {
     router.push("/?from=reader");
   }, [pagination, router]);
 
-  // 跨瀏覽器全螢幕相容封裝
   const getFullscreenElement = () => {
     if (typeof document === "undefined") return null;
     return (
@@ -462,7 +311,7 @@ export default function ReaderPage() {
     );
   };
 
-  // 全螢幕切換
+  // 全螢幕切換（僅由全螢幕按鈕或快捷鍵觸發）
   const toggleFullscreen = useCallback(() => {
     if (typeof document === "undefined") return;
     const elem = document.documentElement as any;
@@ -486,28 +335,9 @@ export default function ReaderPage() {
     }
   }, []);
 
-  // 工具列切換與手機系統頂部狀態列（電量 & 時間）全螢幕連動
+  // 切換工具列（修復先前強制連帶切換瀏覽器全螢幕的 Bug）
   const handleToggleToolbar = useCallback(() => {
-    setShowToolbar((prev) => {
-      const willHide = prev;
-      if (typeof document !== "undefined") {
-        const elem = document.documentElement as any;
-        const req = elem.requestFullscreen || elem.webkitRequestFullscreen;
-        const exit =
-          document.exitFullscreen || (document as any).webkitExitFullscreen;
-
-        if (willHide) {
-          if (!getFullscreenElement() && req) {
-            req.call(elem).catch(() => {});
-          }
-        } else {
-          if (getFullscreenElement() && exit) {
-            exit.call(document).catch(() => {});
-          }
-        }
-      }
-      return !prev;
-    });
+    setShowToolbar((prev) => !prev);
   }, []);
 
   // 同步全螢幕狀態
@@ -523,13 +353,7 @@ export default function ReaderPage() {
   // 鍵盤導航快捷鍵
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (
-        showTOC ||
-        showSettings ||
-        showGestureModal ||
-        searchHook.showSearchModal
-      )
-        return;
+      if (showTOC || showSettings) return;
 
       if (settings.readMode === "continuous") {
         const scrollEl = pagination.scrollContainerRef.current;
@@ -603,59 +427,9 @@ export default function ReaderPage() {
     toggleFullscreen,
     showTOC,
     showSettings,
-    showGestureModal,
-    searchHook.showSearchModal,
   ]);
 
-  // 滑鼠手勢動作分發
-  const handleGestureAction = useCallback(
-    (action: GestureAction) => {
-      switch (action) {
-        case "PREV_PAGE":
-          pagination.goToPrevPage();
-          break;
-        case "NEXT_PAGE":
-          pagination.goToNextPage();
-          break;
-        case "PREV_CHAPTER":
-          pagination.goToPrevChapter();
-          break;
-        case "NEXT_CHAPTER":
-          pagination.goToNextChapter();
-          break;
-        case "SCROLL_TOP":
-          pagination.goToFirstPage();
-          break;
-        case "SCROLL_BOTTOM":
-          pagination.goToLastPage();
-          break;
-        case "TOGGLE_TOC":
-          setShowTOC((prev) => !prev);
-          break;
-        case "TOGGLE_SETTINGS":
-          setShowSettings((prev) => !prev);
-          break;
-        case "BACK_TO_SHELF":
-          handleBackToShelf();
-          break;
-        case "TOGGLE_FULLSCREEN":
-          toggleFullscreen();
-          break;
-        case "TOGGLE_THEME":
-          settings.cycleTheme();
-          break;
-        case "FONT_INCREASE":
-          settings.updateFontSize(1);
-          break;
-        case "FONT_DECREASE":
-          settings.updateFontSize(-1);
-          break;
-      }
-    },
-    [pagination, handleBackToShelf, toggleFullscreen, settings],
-  );
-
-  // 觸控手勢 Hook
+  // 觸控手勢 Hook（僅在左右分頁模式啟用滑動翻頁與點擊翻頁）
   useTouchGesture({
     elementRef: pagination.readerMainRef,
     onSwipeLeft: () => {
@@ -695,13 +469,7 @@ export default function ReaderPage() {
         handleToggleToolbar();
       }
     },
-    enabled: !isLoading,
-  });
-
-  // 滑鼠手勢監聽 Hook
-  const gestureState = useMouseGesture({
-    config: gestureConfig,
-    onAction: handleGestureAction,
+    enabled: !isLoading && settings.readMode === "paginated",
   });
 
   // 全書百分比計算
@@ -712,57 +480,18 @@ export default function ReaderPage() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden flex flex-col select-text bg-[var(--bg-color)] text-[var(--text-color)]">
-      {/* 頂部懸浮資訊列 (極簡書名與章節資訊) */}
+      {/* 頂部懸浮資訊列 */}
       <ReaderHeader
         showToolbar={showToolbar}
         title={title}
         processedChapterTitle={processedChapterTitle}
-        isOffline={isOffline}
         onBackToShelf={handleBackToShelf}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
       />
 
-      {/* 提示與進度衝突對話框 */}
-      <ReaderToasts
-        bookmarkToast={bookmarkHook.bookmarkToast}
-        chapterSwitchToast={pagination.chapterSwitchToast}
-        conflictPrompt={pagination.conflictPrompt}
-        onDismissConflict={() => pagination.setConflictPrompt(null)}
-        onAcceptConflict={(conflict) => {
-          const targetOffset = conflict.serverOffset;
-          const newChIdx =
-            typeof conflict.chapterIndex === "number" &&
-            conflict.chapterIndex >= 0
-              ? conflict.chapterIndex
-              : findCurrentChapter(chapters, targetOffset);
-
-          pagination.restoreProgress({
-            offset: targetOffset,
-            chapterIndex: newChIdx,
-            pageIndex: conflict.pageIndex,
-            pageRatio: conflict.pageRatio,
-            totalPages: conflict.totalPages,
-          });
-
-          LocalStore.applyServerProgress(
-            bookId,
-            {
-              char_offset: targetOffset,
-              percentage: conflict.serverPercentage,
-              device_name: conflict.deviceName,
-              updated_at: conflict.updatedAt || new Date().toISOString(),
-              chapter_index: conflict.chapterIndex,
-              page_index: conflict.pageIndex,
-              page_ratio: conflict.pageRatio,
-              total_pages: conflict.totalPages,
-            },
-            getCachedUserId(),
-          ).catch(console.warn);
-
-          pagination.setConflictPrompt(null);
-        }}
-      />
+      {/* 章節切換通知提示 */}
+      <ReaderToasts chapterSwitchToast={pagination.chapterSwitchToast} />
 
       {/* 閱讀主視圖：水平分頁 vs 垂直滾動 */}
       {settings.readMode === "paginated" ? (
@@ -787,8 +516,6 @@ export default function ReaderPage() {
           processedChapterTitle={processedChapterTitle}
           processedParagraphs={processedParagraphs}
           isLoading={isLoading}
-          ttsIsPlaying={tts.isPlaying}
-          ttsCurrentParagraphIdx={tts.currentParagraphIdx}
           lastTouchActionTime={lastTouchActionTime}
           onPrevPage={pagination.goToPrevPage}
           onNextPage={pagination.goToNextPage}
@@ -798,15 +525,15 @@ export default function ReaderPage() {
       ) : (
         <ContinuousViewport
           scrollContainerRef={pagination.scrollContainerRef}
+          paddingClass={settings.paddingClass}
           maxWidthClass={settings.maxWidthClass}
           currentFontClass={settings.currentFontClass}
           fontSize={settings.fontSize}
           lineHeight={settings.lineHeight}
+          textAlign={settings.textAlign}
           processedChapterTitle={processedChapterTitle}
           processedParagraphs={processedParagraphs}
           isLoading={isLoading}
-          ttsIsPlaying={tts.isPlaying}
-          ttsCurrentParagraphIdx={tts.currentParagraphIdx}
           currentChapterIdx={currentChapterIdx}
           totalChapters={chapters.length}
           onScroll={pagination.handleContinuousScroll}
@@ -816,7 +543,7 @@ export default function ReaderPage() {
         />
       )}
 
-      {/* 底部控制列 (整合章節頁數跳轉與大拇指操作熱區) */}
+      {/* 底部控制列 */}
       <ReaderFooter
         showToolbar={showToolbar}
         scrubberMode={pagination.scrubberMode}
@@ -832,26 +559,16 @@ export default function ReaderPage() {
         currentOffset={pagination.currentOffset}
         totalChars={totalChars}
         scrubTargetInfo={pagination.scrubTargetInfo}
-        showTTSPlayer={showTTSPlayer}
         showTOC={showTOC}
         showSettings={showSettings}
         isFullscreen={isFullscreen}
         onBackToShelf={handleBackToShelf}
-        onOpenSearch={() => searchHook.setShowSearchModal(true)}
-        onAddBookmark={bookmarkHook.handleAddBookmark}
-        onToggleTTS={() => {
-          setShowTTSPlayer((prev) => !prev);
-          if (!showTTSPlayer && !tts.isPlaying) {
-            tts.startReading(processedParagraphs, 0);
-          }
-        }}
         onToggleTOC={() => setShowTOC(!showTOC)}
         onToggleSettings={() => setShowSettings(!showSettings)}
-        onOpenGestureModal={() => setShowGestureModal(true)}
         onToggleFullscreen={toggleFullscreen}
         onToggleScrubberMode={() => {
           pagination.setScrubberMode((m) =>
-            m === "chapter" ? "book" : "chapter",
+            m === "chapter" ? "book" : "chapter"
           );
           pagination.setIsScrubbing(false);
           onUserActivity();
@@ -894,54 +611,10 @@ export default function ReaderPage() {
         }}
       />
 
-      {/* 懸浮 TTS 語音朗讀控制小卡 */}
-      <TTSPlayerWidget
-        isOpen={showTTSPlayer}
-        isPlaying={tts.isPlaying}
-        isPaused={tts.isPaused}
-        currentParagraphIdx={tts.currentParagraphIdx}
-        totalParagraphs={processedParagraphs.length}
-        rate={tts.rate}
-        showToolbar={showToolbar}
-        onClose={() => {
-          tts.stop();
-          setShowTTSPlayer(false);
-        }}
-        onPrevParagraph={() => tts.prevParagraph()}
-        onTogglePlay={() => {
-          if (tts.isPlaying && !tts.isPaused) {
-            tts.pause();
-          } else if (tts.isPaused) {
-            tts.resume();
-          } else {
-            tts.startReading(processedParagraphs, 0);
-          }
-        }}
-        onNextParagraph={() => tts.nextParagraph()}
-        onSetRate={(rate) => tts.setRate(rate)}
-      />
-
-      {/* 書內全文檢索對話框 */}
-      <ReaderSearchModal
-        isOpen={searchHook.showSearchModal}
-        searchQuery={searchHook.searchQuery}
-        searchResults={searchHook.searchResults}
-        isSearching={searchHook.isSearching}
-        totalChars={totalChars}
-        onSearchChange={(val) => {
-          searchHook.setSearchQuery(val);
-          searchHook.performSearch(val);
-        }}
-        onClose={() => searchHook.setShowSearchModal(false)}
-        onJumpToResult={searchHook.jumpToSearchResult}
-        onClearSearch={searchHook.clearSearch}
-      />
-
-      {/* 目錄與書籤抽屜 */}
+      {/* 章節目錄抽屜 */}
       <TOCDrawer
         isOpen={showTOC}
         chapters={chapters}
-        bookmarks={bookmarkHook.bookmarks}
         currentChapterIdx={currentChapterIdx}
         totalChars={totalChars}
         activeChapterBtnRef={pagination.activeChapterBtnRef}
@@ -950,11 +623,6 @@ export default function ReaderPage() {
           pagination.jumpToChapter(chapter);
           setShowTOC(false);
         }}
-        onJumpToBookmark={(bm) => {
-          bookmarkHook.jumpToBookmark(bm);
-          setShowTOC(false);
-        }}
-        onDeleteBookmark={bookmarkHook.handleDeleteBookmark}
       />
 
       {/* 排版偏好抽屜 */}
@@ -983,31 +651,9 @@ export default function ReaderPage() {
         onUpdatePaddingMode={settings.updatePaddingMode}
         onUpdateChineseVariant={settings.updateChineseVariant}
         onUpdateBrightness={settings.updateBrightness}
-        onOpenGestureModal={() => {
-          setShowSettings(false);
-          setShowGestureModal(true);
-        }}
       />
 
-      {/* 滑鼠手勢軌跡繪製 */}
-      <GestureOverlay
-        config={gestureConfig}
-        isActive={gestureState.isActive}
-        trail={gestureState.trail}
-        currentGesture={gestureState.currentGesture}
-        actionName={gestureState.actionName}
-        currentPos={gestureState.currentPos}
-      />
-
-      {/* 滑鼠手勢設定對話框 */}
-      <GestureSettingsModal
-        isOpen={showGestureModal}
-        onClose={() => setShowGestureModal(false)}
-        config={gestureConfig}
-        onConfigChange={setGestureConfig}
-      />
-
-      {/* 閱讀器亮度調整遮罩 (純 Web 遮罩，關閉或切到背景不影響手機系統或其它 App) */}
+      {/* 閱讀器亮度調整遮罩 */}
       {settings.brightness < 100 && (
         <div
           className="fixed inset-0 pointer-events-none transition-opacity duration-150"

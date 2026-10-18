@@ -1,10 +1,7 @@
 /**
  * @file bookshelf.ts
- * @description 書架系統相關型別定義，遵循單一職責原則集中管理書架資料模型與狀態型別
+ * @description 書架系統相關型別定義
  */
-
-import { Book } from "@/lib/db";
-import { UserSession } from "@/lib/auth";
 
 /** 書庫排序依據欄位 */
 export type SortField = "updated" | "title" | "progress" | "chars";
@@ -19,27 +16,4 @@ export type ShelfLayoutMode = "compact" | "detailed";
 export interface EditingBookState {
   id: string;
   title: string;
-}
-
-/** 批次快取全書的進度物件 */
-export interface CacheAllProgress {
-  current: number;
-  total: number;
-}
-
-/** 書架單一書籍呈現與操作所需之附加狀態 */
-export interface BookCardItemProps {
-  book: Book;
-  isCached: boolean;
-  isCaching: boolean;
-  localProgressData?: {
-    percentage?: number;
-    char_offset?: number;
-    updated_at?: string;
-  };
-  layoutMode: ShelfLayoutMode;
-  currentUser?: UserSession | null;
-  onCache: (e: React.MouseEvent, book: Book) => void;
-  onDelete: (e: React.MouseEvent, book: Book) => void;
-  onOpenRename: (e: React.MouseEvent, book: Book) => void;
 }

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookModel, UPLOADS_DIR } from "@/lib/db";
-import { getSessionFromRequest } from "@/lib/auth";
 import fs from "fs";
 import path from "path";
 
@@ -8,14 +7,12 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(
-  req: NextRequest,
+  _req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await context.params;
-    const session = getSessionFromRequest(req);
-    const userId = session?.id || "default_user";
-    const book = BookModel.getById(id, userId);
+    const book = BookModel.getById(id);
     if (!book) {
       return NextResponse.json(
         { success: false, error: "Book not found" },
@@ -32,7 +29,6 @@ export async function GET(
       }
     }
 
-    // 若為既有舊書且尚未存有預解析章節，於後端自動補齊解析並持久化
     if (!parsedChapters || parsedChapters.length === 0) {
       try {
         const filePath = path.join(UPLOADS_DIR, book.file_name);
@@ -60,32 +56,17 @@ export async function GET(
   }
 }
 
-
 export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await context.params;
-    const session = getSessionFromRequest(req);
     const book = BookModel.getById(id);
     if (!book) {
       return NextResponse.json(
         { success: false, error: "找不到該書籍" },
         { status: 404 }
-      );
-    }
-
-    const isAuthorized =
-      !book.uploader_id ||
-      book.uploader_id === "default_user" ||
-      session?.role === "admin" ||
-      (session?.id && book.uploader_id === session.id);
-
-    if (!isAuthorized) {
-      return NextResponse.json(
-        { success: false, error: "您沒有權限修改其他使用者上傳的書籍名稱" },
-        { status: 403 }
       );
     }
 
@@ -101,19 +82,36 @@ export async function PATCH(
 
     const trimmedTitle = title.trim();
     BookModel.updateTitle(id, trimmedTitle);
-    const updatedBook = BookModel.getById(id, session?.id || "default_user");
+    const updatedBook = BookModel.getById(id);
 
-    if (!updatedBook) {
+    return NextResponse.json({ success: true, book: updatedBook });
+  } catch (error: any) {
+    return NextResponse.json(
+      { success: false, error: error.message || "更新書名失敗" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  _req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await context.params;
+    const book = BookModel.getById(id);
+    if (!book) {
       return NextResponse.json(
         { success: false, error: "找不到該書籍" },
         { status: 404 }
       );
     }
 
-    return NextResponse.json({ success: true, book: updatedBook });
+    BookModel.delete(id);
+    return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json(
-      { success: false, error: error.message || "更新書名失敗" },
+      { success: false, error: error.message || "刪除書籍失敗" },
       { status: 500 }
     );
   }

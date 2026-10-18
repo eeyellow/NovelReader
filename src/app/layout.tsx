@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "極簡小說閱讀器 (NovelReader)",
-  description: "跨裝置無縫同步、極速離線快取的小說 PWA 閱讀器",
+  description: "輕量、跨裝置同步的小說閱讀器",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
@@ -34,7 +34,6 @@ export default function RootLayout({
       <head>
         <link rel="icon" href="/icon.svg" type="image/svg+xml" />
         <link rel="apple-touch-icon" href="/icon.svg" />
-        {/* PWA / Cold-Start Instant Auto-Resume (executes before React hydration) */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -56,39 +55,23 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen flex flex-col antialiased select-text">
         {children}
-        {/* Service Worker Registration & Silent Auto-Update */}
+        {/* 自動清除歷史殘留的 Service Worker 與快取 */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
-                window.addEventListener('load', () => {
-                  let refreshing = false;
-                  const hasExistingController = !!navigator.serviceWorker.controller;
-
-                  // 監聽新版 Service Worker 接管事件：自動重載頁面以套用最新代碼
-                  navigator.serviceWorker.addEventListener('controllerchange', () => {
-                    if (!hasExistingController || refreshing) return;
-                    refreshing = true;
-                    window.location.reload();
-                  });
-
-                  navigator.serviceWorker
-                    .register('/sw.js', { updateViaCache: 'none' })
-                    .then((registration) => {
-                      // 1. 每次開啟 App 立即主動向伺服器檢查是否有新版本
-                      registration.update();
-
-                      // 2. 手機 PWA 由背景切換至前景時，立即觸發檢查
-                      document.addEventListener('visibilitychange', () => {
-                        if (document.visibilityState === 'visible') {
-                          registration.update();
-                        }
-                      });
-                    })
-                    .catch((err) => {
-                      console.warn('SW registration failed: ', err);
-                    });
-                });
+                navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                  for (var i = 0; i < registrations.length; i++) {
+                    registrations[i].unregister();
+                  }
+                }).catch(function() {});
+                if ('caches' in window) {
+                  caches.keys().then(function(keys) {
+                    for (var j = 0; j < keys.length; j++) {
+                      caches.delete(keys[j]);
+                    }
+                  }).catch(function() {});
+                }
               }
             `,
           }}

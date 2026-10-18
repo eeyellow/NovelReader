@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookModel, UPLOADS_DIR } from "@/lib/db";
-import { getSessionFromRequest, setSessionCookie } from "@/lib/auth";
 import { decodeToUtf8 } from "@/lib/encoding";
-import { convertToTraditional, isSimplifiedChinese } from "@/lib/chinese";
+import { convertToTraditional } from "@/lib/chinese";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -10,15 +9,11 @@ import crypto from "crypto";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
-    const session = getSessionFromRequest(req);
-    const userId = session?.id || "default_user";
-    const books = BookModel.getAll(userId);
-    const isCloudflare = Boolean(req.headers.get("cf-access-authenticated-user-email"));
-
-    const res = NextResponse.json(
-      { success: true, books, user: session || null },
+    const books = BookModel.getAll();
+    return NextResponse.json(
+      { success: true, books },
       {
         headers: {
           "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
@@ -26,12 +21,6 @@ export async function GET(req: NextRequest) {
         },
       }
     );
-
-    if (session && isCloudflare && !req.cookies.get("nr_session")) {
-      setSessionCookie(res, session);
-    }
-
-    return res;
   } catch (error: any) {
     console.error("Failed to fetch books:", error);
     return NextResponse.json(
@@ -71,21 +60,25 @@ export async function POST(req: NextRequest) {
       }
       detectedEncoding = "EPUB/UTF-8";
     } else {
-      // Auto-detect encoding and convert to standard UTF-8 string for TXT
       const decoded = decodeToUtf8(rawBuffer);
       text = decoded.text;
       detectedEncoding = decoded.detectedEncoding;
     }
 
+    if (!text || text.trim().length === 0) {
+      return NextResponse.json(
+        { success: false, error: "小說檔案內容為空或無法讀取" },
+        { status: 400 }
+      );
+    }
+
     let sanitizedTitle = titleOverride || detectedTitle;
 
-    // If requested, convert entire text and title to Traditional Chinese
     if (shouldConvertToTraditional) {
       text = convertToTraditional(text);
       sanitizedTitle = convertToTraditional(sanitizedTitle);
     }
 
-    // Generate book ID (or use provided safe ID for sync recovery) and sanitized filename
     const idOverride = formData.get("id") as string | null;
     let bookId = `b_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
     if (idOverride && /^[a-zA-Z0-9_-]+$/.test(idOverride)) {
@@ -94,23 +87,14 @@ export async function POST(req: NextRequest) {
     const fileName = `${bookId}.txt`;
     const targetFilePath = path.join(UPLOADS_DIR, fileName);
 
-    console.log(`[API /api/books] Saving book: "${sanitizedTitle}" (${bookId}) -> ${targetFilePath}`);
-
-    // Save as standard UTF-8 file
     fs.writeFileSync(targetFilePath, text, "utf-8");
 
     const totalChars = text.length;
     const fileSize = Buffer.byteLength(text, "utf-8");
 
-    // 於後端 Node.js 環境預先解析章節結構，減輕前端瀏覽器主執行緒負荷
     const { extractChapters } = await import("@/lib/parser");
     const parsedChapters = extractChapters(text);
     const chaptersJson = JSON.stringify(parsedChapters);
-
-    // Insert to DB
-    const session = getSessionFromRequest(req);
-    const uploaderId = session ? session.id : "default_user";
-    const uploaderName = session ? session.name : "訪客";
 
     BookModel.create({
       id: bookId,
@@ -118,16 +102,15 @@ export async function POST(req: NextRequest) {
       file_name: fileName,
       file_size: fileSize,
       total_chars: totalChars,
-      uploader_id: uploaderId,
-      uploader_name: uploaderName,
       chapters_json: chaptersJson,
     });
 
-    const createdBook = BookModel.getById(bookId, uploaderId);
+    const createdBook = BookModel.getById(bookId);
 
     return NextResponse.json({
       success: true,
       book: createdBook,
+      chapters: parsedChapters,
       detectedEncoding,
     });
   } catch (error: any) {

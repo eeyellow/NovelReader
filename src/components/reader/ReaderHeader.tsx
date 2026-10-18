@@ -1,16 +1,15 @@
 /**
  * @file ReaderHeader.tsx
- * @description 閱讀器頂部懸浮資訊列，展示返回書架、書名、章節與離線狀態
+ * @description 閱讀器頂部懸浮資訊列，展示返回書架、書名、章節與全螢幕切換
  */
 
 import React from "react";
-import { ArrowLeft, Maximize, Minimize, WifiOff } from "lucide-react";
+import { ArrowLeft, Maximize, Minimize } from "lucide-react";
 
 interface ReaderHeaderProps {
   showToolbar: boolean;
   title: string;
   processedChapterTitle: string;
-  isOffline?: boolean;
   onBackToShelf: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
@@ -20,7 +19,6 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
   showToolbar,
   title,
   processedChapterTitle,
-  isOffline,
   onBackToShelf,
   isFullscreen,
   onToggleFullscreen,
@@ -42,17 +40,7 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="truncate">
-          <div className="flex items-center gap-1.5 truncate">
-            <h1 className="text-sm font-bold truncate">{title}</h1>
-            {isOffline && (
-              <span
-                className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium shrink-0"
-                title="離線閱讀中，進度與書籤安全保存於本機"
-              >
-                <WifiOff className="w-2.5 h-2.5 mr-0.5" /> 離線
-              </span>
-            )}
-          </div>
+          <h1 className="text-sm font-bold truncate">{title}</h1>
           <p className="text-[11px] text-[var(--text-muted)] truncate">
             {processedChapterTitle}
           </p>
@@ -76,4 +64,3 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
     </header>
   );
 };
-

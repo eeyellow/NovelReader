@@ -1,10 +1,10 @@
 /**
  * @file PaginatedViewport.tsx
- * @description 閱讀器水平多欄分頁閱讀視圖組件，整合點擊翻頁、CSS Columns 排版、TTS 語音高亮與邊界提示
+ * @description 閱讀器水平多欄分頁閱讀視圖組件
  */
 
 import React from "react";
-import { RefreshCw, Volume2, ChevronRight } from "lucide-react";
+import { RefreshCw, ChevronRight } from "lucide-react";
 import { ClickDirection, TextAlignMode } from "@/types/reader";
 
 interface PaginatedViewportProps {
@@ -28,8 +28,6 @@ interface PaginatedViewportProps {
   processedChapterTitle: string;
   processedParagraphs: string[];
   isLoading: boolean;
-  ttsIsPlaying: boolean;
-  ttsCurrentParagraphIdx: number;
   lastTouchActionTime: React.RefObject<number>;
   onPrevPage: () => void;
   onNextPage: () => void;
@@ -58,8 +56,6 @@ export const PaginatedViewport: React.FC<PaginatedViewportProps> = ({
   processedChapterTitle,
   processedParagraphs,
   isLoading,
-  ttsIsPlaying,
-  ttsCurrentParagraphIdx,
   lastTouchActionTime,
   onPrevPage,
   onNextPage,
@@ -119,43 +115,29 @@ export const PaginatedViewport: React.FC<PaginatedViewportProps> = ({
               }}
             >
               <article className={`select-text ${currentFontClass}`}>
-                {/* Chapter Header */}
                 <h2 className="text-xl sm:text-2xl font-bold mb-6 pb-3 border-b border-[var(--border-color)] text-[var(--text-color)]">
                   {processedChapterTitle}
                 </h2>
 
-                {/* Paragraphs */}
-                {processedParagraphs.map((para, i) => {
-                  const isSpeakingThis = ttsIsPlaying && ttsCurrentParagraphIdx === i;
-                  return (
-                    <p
-                      key={i}
-                      className={`novel-content-paragraph leading-relaxed mb-4 ${
-                        textAlign === "justify" ? "text-justify" : "text-left"
-                      } transition-all duration-200 rounded-lg ${
-                        isSpeakingThis
-                          ? "bg-[var(--accent-color)]/20 px-2 py-1 shadow-sm font-medium"
-                          : ""
-                      }`}
-                      style={{ textIndent: isSpeakingThis ? "0" : "2em" }}
-                    >
-                      {isSpeakingThis && (
-                        <Volume2 className="w-4 h-4 inline-block mr-1.5 text-[var(--accent-color)] animate-pulse align-middle" />
-                      )}
-                      {para}
-                    </p>
-                  );
-                })}
+                {processedParagraphs.map((para, i) => (
+                  <p
+                    key={i}
+                    className={`novel-content-paragraph leading-relaxed mb-4 ${
+                      textAlign === "justify" ? "text-justify" : "text-left"
+                    }`}
+                    style={{ textIndent: "2em" }}
+                  >
+                    {para}
+                  </p>
+                ))}
 
-                {/* End of chapter boundary hint */}
                 {currentPage === totalPages - 1 && currentChapterIdx < totalChapters - 1 && (
                   <div className="pt-6 pb-2 text-center text-xs text-[var(--text-muted)] opacity-70 flex items-center justify-center space-x-1 select-none">
-                    <span>本章完 • 點擊右側或往左滑進入下一章</span>
+                    <span>本章完 • 點擊翻頁進入下一章</span>
                     <ChevronRight className="w-3.5 h-3.5" />
                   </div>
                 )}
 
-                {/* End of book marker if on last chapter */}
                 {currentChapterIdx === totalChapters - 1 && (
                   <div className="py-12 text-center text-xs text-[var(--text-muted)] space-y-2 border-t border-[var(--border-color)] mt-8">
                     <p>—— 全文完 ——</p>

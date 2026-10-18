@@ -1,12 +1,11 @@
 /**
  * @file ReaderSettingsDrawer.tsx
- * @description 閱讀器排版偏好抽屜組件，支援繁簡切換、翻頁模式、主題、字級、行距、版寬、對齊與手勢自訂入口
+ * @description 閱讀器排版偏好抽屜組件，支援繁簡切換、翻頁模式、主題、字級、行距、版寬與對齊
  */
 
 import React from "react";
-import { X, MousePointerClick, Sun, SunMedium } from "lucide-react";
+import { X, Sun, SunMedium } from "lucide-react";
 import {
-  ThemeId,
   FontFamilyId,
   MaxWidthMode,
   ClickDirection,
@@ -42,7 +41,6 @@ interface ReaderSettingsDrawerProps {
   onUpdatePaddingMode: (pad: PaddingMode) => void;
   onUpdateChineseVariant: (variant: ChineseVariant) => void;
   onUpdateBrightness: (val: number) => void;
-  onOpenGestureModal: () => void;
 }
 
 export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
@@ -70,7 +68,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
   onUpdatePaddingMode,
   onUpdateChineseVariant,
   onUpdateBrightness,
-  onOpenGestureModal,
 }) => {
   if (!isOpen) return null;
 
@@ -78,7 +75,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
     <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex justify-end animate-fade-in">
       <div className="flex-1" onClick={onClose} />
       <div className="bg-[var(--card-bg)] border-l border-[var(--border-color)] w-full max-w-sm h-full flex flex-col shadow-2xl">
-        {/* 固定頂部 Header */}
         <div className="p-4 sm:p-5 flex items-center justify-between border-b border-[var(--border-color)] flex-shrink-0 bg-[var(--card-bg)]">
           <h3 className="font-bold text-base">排版與閱讀偏好</h3>
           <button
@@ -90,7 +86,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           </button>
         </div>
 
-        {/* 可滾動設定區 */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5">
           {/* Chinese Variant dynamic conversion */}
           <div className="space-y-2">
@@ -105,9 +100,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
               ].map((cv) => (
                 <button
                   key={cv.id}
-                  onClick={() =>
-                    onUpdateChineseVariant(cv.id as ChineseVariant)
-                  }
+                  onClick={() => onUpdateChineseVariant(cv.id as ChineseVariant)}
                   className={`py-2 rounded-xl border text-xs font-medium transition-all ${
                     chineseVariant === cv.id
                       ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm font-semibold"
@@ -120,7 +113,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
             </div>
           </div>
 
-          {/* Reading Mode Selector (Paginated vs Continuous Scroll) */}
+          {/* Reading Mode Selector */}
           <div className="space-y-2">
             <label className="text-xs font-semibold text-[var(--text-muted)]">
               閱讀翻頁模式
@@ -297,33 +290,35 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           </div>
 
           {/* Click Turn Direction */}
-          <div className="space-y-2">
-            <label className="text-xs font-semibold text-[var(--text-muted)]">
-              點擊翻頁方向
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => onUpdateClickDirection("standard")}
-                className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
-                  clickDirection === "standard"
-                    ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm"
-                    : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
-                }`}
-              >
-                左：上一頁 ｜ 右：下一頁
-              </button>
-              <button
-                onClick={() => onUpdateClickDirection("inverted")}
-                className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
-                  clickDirection === "inverted"
-                    ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm"
-                    : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
-                }`}
-              >
-                左：下一頁 ｜ 右：上一頁
-              </button>
+          {readMode === "paginated" && (
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-[var(--text-muted)]">
+                點擊翻頁方向
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => onUpdateClickDirection("standard")}
+                  className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
+                    clickDirection === "standard"
+                      ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm"
+                      : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                  }`}
+                >
+                  左：上一頁 ｜ 右：下一頁
+                </button>
+                <button
+                  onClick={() => onUpdateClickDirection("inverted")}
+                  className={`py-2 px-2.5 rounded-xl border text-xs font-medium transition-all ${
+                    clickDirection === "inverted"
+                      ? "bg-[var(--accent-color)] text-white border-transparent shadow-sm"
+                      : "border-[var(--border-color)] bg-[var(--bg-color)] text-[var(--text-color)]"
+                  }`}
+                >
+                  左：下一頁 ｜ 右：上一頁
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Text Alignment */}
           <div className="space-y-2">
@@ -377,30 +372,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                   {p.name}
                 </button>
               ))}
-            </div>
-          </div>
-
-          {/* Mouse Gesture Quick Settings */}
-          <div className="pt-2 border-t border-[var(--border-color)] space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <label className="text-xs font-semibold text-[var(--text-color)]">
-                  滑鼠手勢
-                </label>
-                <p className="text-[10px] text-[var(--text-muted)]">
-                  按住滑鼠右鍵拖曳快速控制
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  onClose();
-                  onOpenGestureModal();
-                }}
-                className="px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-color)] text-[11px] font-semibold text-[var(--accent-color)] hover:border-[var(--accent-color)] flex items-center gap-1"
-              >
-                <MousePointerClick className="w-3.5 h-3.5" />
-                自訂與試畫
-              </button>
             </div>
           </div>
         </div>

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookModel, ProgressModel } from "@/lib/db";
-import { getSessionFromRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,9 +16,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const session = getSessionFromRequest(req);
-    const userId = session?.id || searchParams.get("userId") || "default_user";
-    const progress = ProgressModel.get(bookId, userId);
+    const progress = ProgressModel.get(bookId);
     return NextResponse.json({ success: true, progress: progress || null });
   } catch (error: any) {
     return NextResponse.json(
@@ -37,7 +34,6 @@ export async function POST(req: NextRequest) {
     if (contentType.includes("application/json")) {
       body = await req.json().catch(() => ({}));
     } else {
-      // Handle sendBeacon plain text JSON payload
       const text = await req.text().catch(() => "");
       try {
         body = text ? JSON.parse(text) : {};
@@ -65,10 +61,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const session = getSessionFromRequest(req);
-    const userId = session?.id || body.user_id || "default_user";
-
-    // 檢查目標書籍是否存在於伺服器資料庫，防止觸發 SQLite 外鍵約束錯誤 (FOREIGN KEY constraint failed)
     const book = BookModel.getById(book_id);
     if (!book) {
       return NextResponse.json(
@@ -92,8 +84,7 @@ export async function POST(req: NextRequest) {
         page_index: typeof page_index === "number" ? page_index : undefined,
         page_ratio: typeof page_ratio === "number" ? page_ratio : undefined,
         total_pages: typeof total_pages === "number" ? total_pages : undefined,
-      },
-      userId
+      }
     );
 
     return NextResponse.json({

@@ -2,7 +2,7 @@
 
 /**
  * @file page.tsx
- * @description 書架首頁容器組件，負責協調狀態管理 Hook 與展示型子組件
+ * @description 書架首頁容器組件
  */
 
 import React from "react";
@@ -15,14 +15,11 @@ import { BookCard } from "@/components/bookshelf/BookCard";
 import { DeviceModal } from "@/components/bookshelf/DeviceModal";
 import { SimplifiedConvertModal } from "@/components/bookshelf/SimplifiedConvertModal";
 import { RenameModal } from "@/components/bookshelf/RenameModal";
-import { StorageModal } from "@/components/bookshelf/StorageModal";
-import { AuthModal } from "@/components/auth/AuthModal";
 import { SystemInfoModal } from "@/components/bookshelf/SystemInfoModal";
 
 export default function BookshelfPage() {
   const shelf = useBookshelf();
 
-  // 若 PWA 啟動且有最後閱讀書籍時，顯示接續閱讀載入過渡畫面
   if (shelf.isRedirecting) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-color)] text-[var(--text-color)] select-none">
@@ -37,44 +34,28 @@ export default function BookshelfPage() {
     );
   }
 
-  const cachedCount = Object.values(shelf.cachedStatus).filter(Boolean).length;
-
   return (
     <div className="min-h-screen flex flex-col transition-colors duration-200">
-      {/* 頂部導覽列 */}
       <BookshelfHeader
-        isOffline={shelf.isOffline}
         deviceName={shelf.deviceName}
         currentTheme={shelf.currentTheme}
         showThemeMenu={shelf.showThemeMenu}
         themeMenuRef={shelf.themeMenuRef}
         loading={shelf.loading}
-        currentUser={shelf.currentUser}
         onOpenDeviceModal={() => shelf.setShowDeviceModal(true)}
         onToggleThemeMenu={() => shelf.setShowThemeMenu((prev) => !prev)}
         onSelectTheme={(themeId) => {
           shelf.changeTheme(themeId);
           shelf.setShowThemeMenu(false);
         }}
-        onOpenStorageModal={() => {
-          shelf.fetchStorageInfo();
-          shelf.setShowStorageModal(true);
-        }}
         onRefresh={shelf.fetchBooks}
-        onOpenAuthModal={() => shelf.setShowAuthModal(true)}
-        onLogout={shelf.handleLogout}
-        onOpenSystemInfo={() => {
-          shelf.fetchStorageInfo();
-          shelf.setShowSystemInfoModal(true);
-        }}
+        onOpenSystemInfo={() => shelf.setShowSystemInfoModal(true)}
       />
 
-      {/* 主內容區 */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-8 space-y-6">
-        {/* 上傳與搜尋列 */}
         <BookUploadBar
           isUploading={shelf.isUploading}
-          isOffline={shelf.isOffline}
+          isOffline={false}
           uploadStatus={shelf.uploadStatus}
           searchTerm={shelf.searchTerm}
           fileInputRef={shelf.fileInputRef}
@@ -82,9 +63,7 @@ export default function BookshelfPage() {
           onFileSelect={shelf.handleFileSelect}
         />
 
-        {/* 書庫清單區塊 */}
         <div>
-          {/* 工具列（排序、排列方式） */}
           <BookshelfToolbar
             totalCount={shelf.filteredBooks.length}
             sortBy={shelf.sortBy}
@@ -95,7 +74,6 @@ export default function BookshelfPage() {
             onLayoutModeChange={shelf.handleSetLayout}
           />
 
-          {/* 載入骨架屏 / 空狀態 / 書籍列表 */}
           {shelf.loading ? (
             shelf.layoutMode === "compact" ? (
               <div className="space-y-2">
@@ -138,36 +116,24 @@ export default function BookshelfPage() {
               )}
             </div>
           ) : shelf.layoutMode === "compact" ? (
-            /* 精簡列表視圖 */
             <div className="space-y-2">
               {shelf.filteredBooks.map((book) => (
                 <BookCard
                   key={book.id}
                   book={book}
                   layoutMode="compact"
-                  currentUser={shelf.currentUser}
-                  isCached={!!shelf.cachedStatus[book.id]}
-                  isCaching={!!shelf.cachingBookIds[book.id]}
-                  localProgressData={shelf.localProgress[book.id]}
-                  onCache={shelf.handleCacheBook}
                   onDelete={shelf.handleDeleteBook}
                   onOpenRename={shelf.handleOpenRename}
                 />
               ))}
             </div>
           ) : (
-            /* 詳細卡片網格視圖 */
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {shelf.filteredBooks.map((book) => (
                 <BookCard
                   key={book.id}
                   book={book}
                   layoutMode="detailed"
-                  currentUser={shelf.currentUser}
-                  isCached={!!shelf.cachedStatus[book.id]}
-                  isCaching={!!shelf.cachingBookIds[book.id]}
-                  localProgressData={shelf.localProgress[book.id]}
-                  onCache={shelf.handleCacheBook}
                   onDelete={shelf.handleDeleteBook}
                   onOpenRename={shelf.handleOpenRename}
                 />
@@ -177,7 +143,6 @@ export default function BookshelfPage() {
         </div>
       </main>
 
-      {/* 裝置名稱設定對話框 */}
       <DeviceModal
         isOpen={shelf.showDeviceModal}
         tempDeviceName={shelf.tempDeviceName}
@@ -188,7 +153,6 @@ export default function BookshelfPage() {
         onSave={shelf.handleSaveDeviceName}
       />
 
-      {/* 簡體轉正體確認對話框 */}
       <SimplifiedConvertModal
         pendingFile={shelf.pendingSimplifiedFile}
         rememberConversionChoice={shelf.rememberConversionChoice}
@@ -197,7 +161,6 @@ export default function BookshelfPage() {
         onConfirmChoice={shelf.handleConfirmSimplifiedChoice}
       />
 
-      {/* 修改書名對話框 */}
       <RenameModal
         editingBook={shelf.editingBook}
         editTitleInput={shelf.editTitleInput}
@@ -207,40 +170,11 @@ export default function BookshelfPage() {
         onSave={shelf.handleSaveTitle}
       />
 
-      {/* 離線儲存空間管理對話框 */}
-      <StorageModal
-        isOpen={shelf.showStorageModal}
-        storageUsage={shelf.storageUsage}
-        storageQuota={shelf.storageQuota}
-        cachedCount={cachedCount}
-        totalBooksCount={shelf.books.length}
-        isCachingAll={shelf.isCachingAll}
-        cacheAllProgress={shelf.cacheAllProgress}
-        onClose={() => shelf.setShowStorageModal(false)}
-        onCacheAll={shelf.handleCacheAllBooks}
-        onClearAll={shelf.handleClearAllCaches}
-      />
-
-      {/* 帳號登入 / 切換身分對話框 */}
-      <AuthModal
-        isOpen={shelf.showAuthModal}
-        onClose={() => shelf.setShowAuthModal(false)}
-        currentUser={shelf.currentUser}
-        googleConfigured={shelf.googleConfigured}
-        onLoginSuccess={shelf.handleLoginSuccess}
-      />
-
-      {/* 系統資訊與版本對話框 */}
       <SystemInfoModal
         isOpen={shelf.showSystemInfoModal}
         onClose={() => shelf.setShowSystemInfoModal(false)}
-        isOffline={shelf.isOffline}
         deviceName={shelf.deviceName}
-        currentUser={shelf.currentUser}
         totalBooksCount={shelf.books.length}
-        cachedCount={cachedCount}
-        storageUsage={shelf.storageUsage}
-        storageQuota={shelf.storageQuota}
       />
     </div>
   );

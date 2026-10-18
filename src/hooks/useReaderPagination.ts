@@ -1,11 +1,6 @@
 /**
  * @file useReaderPagination.ts
- * @description 閱讀器分頁演算法、視窗尺寸響應、跨裝置進度同步與導航管理 Hook
- *
- * 進度回報原則：
- * - 只有「使用者真的移動位置」（翻頁、切章、跳轉、捲動）才呼叫 syncProgress 產生新時間戳
- * - 開書還原、套用雲端進度、旋轉/縮放/字級/全螢幕等版面重算，只更新「基準位置」，不產生新時間戳，
- *   否則閒置裝置一回前景就會用舊位置蓋掉其他裝置較新的進度
+ * @description 閱讀器分頁演算法、視窗尺寸響應、進度同步與導航管理 Hook
  */
 
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
@@ -17,7 +12,7 @@ import {
   onBeforeBackgroundSync,
   type ProgressExtra,
 } from "@/lib/sync";
-import { ScrubberMode, ConflictPromptData } from "@/types/reader";
+import { ScrubberMode } from "@/types/reader";
 
 interface UseReaderPaginationOptions {
   bookId: string;
@@ -34,9 +29,7 @@ interface UseReaderPaginationOptions {
   maxWidthMode: string;
   columnGap?: number;
   onActivity?: () => void;
-  /** 內容 DOM 是否已掛載（載入中為 false）；切換時需重新量測並重新掛 ResizeObserver */
   isContentReady?: boolean;
-  /** 閱讀模式；切換時以目前 offset 還原位置 */
   readMode?: string;
 }
 
@@ -85,11 +78,7 @@ export function useReaderPagination({
   const [scrubBookPercentage, setScrubBookPercentage] = useState<number>(0);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPage, setScrubPage] = useState(0);
-  /** 量測完成後強制觸發一次位置回報（即使 page/totalPages 數值沒變） */
   const [layoutTick, setLayoutTick] = useState(0);
-
-  // 跨裝置雲端進度衝突提示
-  const [conflictPrompt, setConflictPrompt] = useState<ConflictPromptData | null>(null);
 
   // 視圖與量測 DOM 參照
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -104,8 +93,8 @@ export function useReaderPagination({
   const pendingTargetPageRatio = useRef<number | null>(null);
   const pendingTargetPageIndex = useRef<number | null>(null);
   const pendingTargetTotalPages = useRef<number | null>(null);
-  /** true 代表目前 pending 目標是「還原」（開書/套用雲端/切模式），結果只當基準、不上傳 */
   const isRestoringProgress = useRef<boolean>(true);
+
   const currentPageRef = useRef(currentPage);
   currentPageRef.current = currentPage;
   const totalPagesRef = useRef(totalPages);
@@ -121,18 +110,13 @@ export function useReaderPagination({
   bookIdRef.current = bookId;
   const totalCharsRef = useRef(totalChars);
   totalCharsRef.current = totalChars;
-  const isContentReadyRef = useRef(isContentReady);
-  isContentReadyRef.current = isContentReady;
 
-  /** 開書還原完成前絕不回報（避免以第 0 章第 0 頁蓋掉進度） */
   const hasRestoredRef = useRef(false);
-  /** 最後一次「已回報或視為基準」的位置 key，相同就不重複產生時間戳 */
   const lastReportedKeyRef = useRef<string | null>(null);
   const lastReportedChapterRef = useRef<number | null>(null);
   const continuousRetryRef = useRef(0);
   const programmaticScrollRef = useRef<{ top: number; until: number } | null>(null);
   const scrollReportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevLayoutChapterIdxRef = useRef(currentChapterIdx);
   const prevReadModeRef = useRef(readMode);
 
   const hasPendingNavigation = () =>
@@ -154,14 +138,12 @@ export function useReaderPagination({
     lastReportedChapterRef.current = chIdx;
   };
 
-  // 換書時重置回報狀態
   useEffect(() => {
     hasRestoredRef.current = false;
     lastReportedKeyRef.current = null;
     lastReportedChapterRef.current = null;
   }, [bookId]);
 
-  /** 由目前 DOM / state ref 計算位置（連續捲動用 scroll 比例，分頁用頁碼比例） */
   const computePosition = useCallback((): PositionSnapshot | null => {
     const chapter = currentChapterRef.current;
     const total = totalCharsRef.current;
@@ -191,7 +173,6 @@ export function useReaderPagination({
     };
   }, []);
 
-  /** 回報目前位置：只有與上次基準不同、且開書還原已完成時才產生新時間戳 */
   const reportPosition = useCallback(() => {
     const pos = computePosition();
     if (!pos) return;
@@ -206,25 +187,40 @@ export function useReaderPagination({
     syncProgress(bookIdRef.current, pos.offset, percentage, chapterChanged, pos.extra);
   }, [computePosition]);
 
-  // 章節切換 Toast 提示
   const notifyChapterSwitch = useCallback(
     (targetIdx: number) => {
       if (chapters[targetIdx]) {
         const nextTitle = chapters[targetIdx].title;
         setChapterSwitchToast(`切換至：${nextTitle}`);
-        setTimeout(() => setChapterSwitchToast(null), 2400);
+        setTimeout(() => setChapterSwitchToast(null), 2200);
       }
     },
     [chapters]
   );
 
-  // 連續滾動容器的位置還原與重新定位
   const applyContinuousScrollTarget = useCallback(() => {
     const scrollEl = scrollContainerRef.current;
     const chapter = currentChapterRef.current;
     if (!scrollEl || !chapter) return false;
     const range = scrollEl.scrollHeight - scrollEl.clientHeight;
-    if (range <= 0) return false;
+    if (range <= 0) {
+      // 若章節極短無須捲動，直接完成還原
+      if (scrollEl.clientHeight > 0) {
+        const wasRestoring = isRestoringProgress.current;
+        clearPendingTargets();
+        isRestoringProgress.current = false;
+        const pos = computePosition();
+        if (pos) {
+          setCurrentOffset(pos.offset);
+          markBaseline(pos.key, pos.chIdx);
+        }
+        if (wasRestoring) {
+          hasRestoredRef.current = true;
+        }
+        return true;
+      }
+      return false;
+    }
 
     let targetTop: number | null = null;
     if (pendingPageRef.current === "last") {
@@ -259,9 +255,7 @@ export function useReaderPagination({
     return false;
   }, [computePosition]);
 
-  // 多欄分頁核心重算演算法
   const measurePagination = useCallback(() => {
-    // 連續滾動模式
     if (!viewportRef.current && scrollContainerRef.current) {
       if (hasPendingNavigation()) {
         const applied = applyContinuousScrollTarget();
@@ -396,7 +390,6 @@ export function useReaderPagination({
     }
   }, [columnGap, processedParagraphs.length, applyContinuousScrollTarget]);
 
-  // 排版、章節、字體或內容載入完成時重新計算分頁
   useLayoutEffect(() => {
     continuousRetryRef.current = 0;
     measurePagination();
@@ -416,23 +409,17 @@ export function useReaderPagination({
     measurePagination,
   ]);
 
-  // 閱讀模式或章節切換的追蹤
   useEffect(() => {
-    if (prevLayoutChapterIdxRef.current !== currentChapterIdx) {
-      prevLayoutChapterIdxRef.current = currentChapterIdx;
-    }
     if (prevReadModeRef.current !== readMode) {
       prevReadModeRef.current = readMode;
-      // 切換閱讀模式時保留當前 offset 重新定位
       if (currentOffsetRef.current > 0) {
         pendingTargetOffset.current = currentOffsetRef.current;
         isRestoringProgress.current = true;
         measurePagination();
       }
     }
-  }, [currentChapterIdx, readMode, measurePagination]);
+  }, [readMode, measurePagination]);
 
-  // ResizeObserver 監聽視窗或旋轉螢幕，按閱讀比例保留位置
   useEffect(() => {
     const el = viewportRef.current || scrollContainerRef.current;
     if (!el) return;
@@ -462,15 +449,12 @@ export function useReaderPagination({
     return () => observer.disconnect();
   }, [measurePagination, isContentReady, readMode]);
 
-  // 翻頁或佈局完成後的位置計算與回報
   useEffect(() => {
     reportPosition();
   }, [currentPage, totalPages, currentChapterIdx, layoutTick, reportPosition]);
 
-  // 註冊退到背景前的同步鉤子：強制確認最新進度已排入待發佇列
   useEffect(() => {
     return onBeforeBackgroundSync(() => {
-      // 若連續滾動有節流中的回報，立刻結清
       if (scrollReportTimerRef.current) {
         clearTimeout(scrollReportTimerRef.current);
         scrollReportTimerRef.current = null;
@@ -485,7 +469,6 @@ export function useReaderPagination({
     });
   }, [computePosition]);
 
-  // 組件卸載時，確保待同步佇列立即送出
   useEffect(() => {
     return () => {
       if (scrollReportTimerRef.current) {
@@ -496,7 +479,6 @@ export function useReaderPagination({
     };
   }, []);
 
-  // 專門用於「開書初始化」或「接收雲端進度衝突」的還原函式
   const restoreProgress = useCallback(
     (target: RestoreTarget) => {
       isRestoringProgress.current = true;
@@ -518,12 +500,10 @@ export function useReaderPagination({
     [chapters, measurePagination, setCurrentChapterIdx]
   );
 
-  // 主動觸發進度雲端同步（用於返回書架、跳轉等重要節點，不重新產生時間戳）
   const syncCurrentProgressToServer = useCallback(() => {
     flushPendingProgress().catch(console.warn);
   }, []);
 
-  // 翻頁導航方法（使用者操作，主動設定 isRestoringProgress = false）
   const goToNextPage = useCallback(() => {
     if (currentPage < totalPages - 1) {
       isRestoringProgress.current = false;
@@ -570,23 +550,6 @@ export function useReaderPagination({
     }
   }, [currentChapterIdx, notifyChapterSwitch, setCurrentChapterIdx]);
 
-  const goToFirstPage = useCallback(() => {
-    pendingPageRef.current = "first";
-    isRestoringProgress.current = false;
-    setCurrentChapterIdx(0);
-    notifyChapterSwitch(0);
-  }, [notifyChapterSwitch, setCurrentChapterIdx]);
-
-  const goToLastPage = useCallback(() => {
-    if (chapters.length > 0) {
-      const lastIdx = chapters.length - 1;
-      pendingPageRef.current = "last";
-      isRestoringProgress.current = false;
-      setCurrentChapterIdx(lastIdx);
-      notifyChapterSwitch(lastIdx);
-    }
-  }, [chapters.length, notifyChapterSwitch, setCurrentChapterIdx]);
-
   const jumpToChapter = useCallback(
     (chapter: Chapter) => {
       if (chapter.index === currentChapterIdx) {
@@ -601,13 +564,11 @@ export function useReaderPagination({
     [currentChapterIdx, setCurrentChapterIdx]
   );
 
-  // 連續滾動事件處理（節流回報，避免高頻觸發）
   const handleContinuousScroll = useCallback(() => {
     onActivity?.();
     const scrollEl = scrollContainerRef.current;
     if (!scrollEl || !currentChapterRef.current) return;
 
-    // 略過程式碼定位觸發的 scroll
     if (programmaticScrollRef.current) {
       if (Date.now() < programmaticScrollRef.current.until) {
         return;
@@ -622,7 +583,6 @@ export function useReaderPagination({
     }, SCROLL_REPORT_THROTTLE_MS);
   }, [onActivity, reportPosition]);
 
-  // 跳轉至指定 offset 與章節
   const jumpToOffset = useCallback(
     (targetOffset: number, targetChapterIdx: number) => {
       isRestoringProgress.current = false;
@@ -636,7 +596,6 @@ export function useReaderPagination({
     [currentChapterIdx, measurePagination, setCurrentChapterIdx]
   );
 
-  // 滑桿拖曳時的目標預覽資訊
   const scrubTargetInfo = useMemo(() => {
     if (!isScrubbing || !totalChars) return null;
     if (scrubberMode === "chapter") {
@@ -680,27 +639,16 @@ export function useReaderPagination({
     setIsScrubbing,
     scrubPage,
     setScrubPage,
-    conflictPrompt,
-    setConflictPrompt,
     viewportRef,
     contentRef,
     readerMainRef,
     scrollContainerRef,
     activeChapterBtnRef,
-    pendingPageRef,
-    pendingTargetOffset,
-    pendingTargetPageRatio,
-    pendingTargetPageIndex,
-    pendingTargetTotalPages,
-    isRestoringProgress,
-    measurePagination,
     restoreProgress,
     goToNextPage,
     goToPrevPage,
     goToNextChapter,
     goToPrevChapter,
-    goToFirstPage,
-    goToLastPage,
     jumpToChapter,
     handleContinuousScroll,
     jumpToOffset,

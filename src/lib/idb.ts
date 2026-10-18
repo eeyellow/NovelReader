@@ -1,11 +1,9 @@
 import { openDB, DBSchema, IDBPDatabase } from "idb";
-import type { Book } from "./db";
-import { getCachedUserId } from "./clientAuth";
 import { parseSafeTime } from "./format";
 
 interface NovelReaderDB extends DBSchema {
   books_content: {
-    key: string; // book_id
+    key: string;
     value: {
       book_id: string;
       title: string;
@@ -15,10 +13,9 @@ interface NovelReaderDB extends DBSchema {
     };
   };
   local_progress: {
-    key: string; // book_id or user_id:book_id
+    key: string;
     value: {
       book_id: string;
-      user_id?: string;
       char_offset: number;
       percentage: number;
       chapter_index?: number;
@@ -27,38 +24,21 @@ interface NovelReaderDB extends DBSchema {
       total_pages?: number;
       device_name: string;
       updated_at: string;
-      synced: boolean;
     };
-  };
-  bookmarks: {
-    key: string; // id
-    value: {
-      id: string;
-      user_id?: string;
-      book_id: string;
-      char_offset: number;
-      title: string;
-      preview_text: string;
-      created_at: string;
-    };
-    indexes: { "by_book": string };
   };
   chapters_cache: {
-    key: string; // book_id
+    key: string;
     value: {
       book_id: string;
       chapters: any[];
       cached_at: string;
     };
   };
-  settings: {
-    key: string;
-    value: any;
-  };
 }
 
 const DB_NAME = "novel_reader_local";
 const DB_VERSION = 3;
+const LS_PROGRESS_PREFIX = "novel_reader_prog_";
 
 let dbPromise: Promise<IDBPDatabase<NovelReaderDB>> | null = null;
 
@@ -68,29 +48,18 @@ export function getLocalDB() {
   }
   if (!dbPromise) {
     dbPromise = openDB<NovelReaderDB>(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion) {
+      upgrade(db) {
         if (!db.objectStoreNames.contains("books_content")) {
           db.createObjectStore("books_content", { keyPath: "book_id" });
         }
         if (!db.objectStoreNames.contains("local_progress")) {
           db.createObjectStore("local_progress", { keyPath: "book_id" });
         }
-        if (!db.objectStoreNames.contains("settings")) {
-          db.createObjectStore("settings");
-        }
-        if (!db.objectStoreNames.contains("bookmarks")) {
-          const bmStore = db.createObjectStore("bookmarks", { keyPath: "id" });
-          bmStore.createIndex("by_book", "book_id");
-        }
         if (!db.objectStoreNames.contains("chapters_cache")) {
           db.createObjectStore("chapters_cache", { keyPath: "book_id" });
         }
       },
-      blocked() {
-        console.warn("IndexedDB upgrade blocked: Please close other tabs of NovelReader");
-      },
       blocking() {
-        console.warn("IndexedDB blocking: Closing connection to allow upgrade");
         if (dbPromise) {
           dbPromise.then((db) => db.close()).catch(() => {});
           dbPromise = null;
@@ -108,18 +77,6 @@ export function getLocalDB() {
   return dbPromise;
 }
 
-// Request persistent storage for Safari/iOS/Android
-export async function requestPersistentStorage(): Promise<boolean> {
-  if (typeof window !== "undefined" && navigator.storage && navigator.storage.persist) {
-    const isPersisted = await navigator.storage.persisted();
-    if (!isPersisted) {
-      return await navigator.storage.persist();
-    }
-    return isPersisted;
-  }
-  return false;
-}
-
 export type LocalProgressRecord = NovelReaderDB["local_progress"]["value"];
 
 export interface ProgressExtraFields {
@@ -129,146 +86,96 @@ export interface ProgressExtraFields {
   total_pages?: number;
 }
 
-const LS_PROGRESS_PREFIX = "novel_reader_prog_";
-
-function resolveProgressUserId(userId?: string): string {
-  return userId && userId !== "default_user" ? userId : getCachedUserId();
-}
-
-/** 本機進度紀錄的主鍵：`${userId}:${bookId}` */
-export function getProgressKey(bookId: string, userId?: string): string {
-  return `${resolveProgressUserId(userId)}:${bookId}`;
-}
-
-function readLsProgress(key: string): LocalProgressRecord | null {
+function readLsProgress(bookId: string): LocalProgressRecord | null {
   if (typeof localStorage === "undefined") return null;
   try {
-    const raw = localStorage.getItem(`${LS_PROGRESS_PREFIX}${key}`);
+    const raw =
+      localStorage.getItem(`${LS_PROGRESS_PREFIX}${bookId}`) ||
+      localStorage.getItem(`${LS_PROGRESS_PREFIX}default_user:${bookId}`);
     return raw ? (JSON.parse(raw) as LocalProgressRecord) : null;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
-function writeLsProgress(lsKey: string, record: LocalProgressRecord) {
+function writeLsProgress(bookId: string, record: LocalProgressRecord) {
   if (typeof localStorage === "undefined") return;
   try {
-    localStorage.setItem(`${LS_PROGRESS_PREFIX}${lsKey}`, JSON.stringify(record));
-  } catch (e) {}
-}
-
-/** 取較新的一筆；時間相同時優先取已同步 (synced) 的版本 */
-function pickNewerProgress(
-  a?: LocalProgressRecord | null,
-  b?: LocalProgressRecord | null
-): LocalProgressRecord | null {
-  if (!a) return b || null;
-  if (!b) return a;
-  const ta = parseSafeTime(a.updated_at);
-  const tb = parseSafeTime(b.updated_at);
-  if (tb > ta) return b;
-  if (ta > tb) return a;
-  return b.synced && !a.synced ? b : a;
-}
-
-function isNotOlder(candidate: LocalProgressRecord, existing?: LocalProgressRecord | null) {
-  return !existing || parseSafeTime(candidate.updated_at) >= parseSafeTime(existing.updated_at);
+    localStorage.setItem(`${LS_PROGRESS_PREFIX}${bookId}`, JSON.stringify(record));
+  } catch {}
 }
 
 export const LocalStore = {
   async saveBookContent(bookId: string, title: string, content: string, totalChars: number) {
-    if (!content || typeof content !== "string" || (content.startsWith('{"') && content.includes('"success":false'))) {
-      console.warn("Refusing to save corrupt content for book:", bookId);
+    if (
+      !content ||
+      typeof content !== "string" ||
+      (content.startsWith('{"') && content.includes('"success":false'))
+    ) {
       return;
     }
-    const db = await getLocalDB();
-    if (!db) return;
-    await db.put("books_content", {
-      book_id: bookId,
-      title,
-      content,
-      total_chars: totalChars || content.length,
-      cached_at: new Date().toISOString(),
-    });
+    try {
+      const db = await getLocalDB();
+      if (!db) return;
+      await db.put("books_content", {
+        book_id: bookId,
+        title,
+        content,
+        total_chars: totalChars || content.length,
+        cached_at: new Date().toISOString(),
+      });
+    } catch {}
   },
 
   async getBookContent(bookId: string) {
-    const db = await getLocalDB();
-    if (!db) return null;
-    return await db.get("books_content", bookId);
-  },
-
-  async isBookCached(bookId: string): Promise<boolean> {
-    const db = await getLocalDB();
-    if (!db) return false;
-    const count = await db.count("books_content", bookId);
-    return count > 0;
-  },
-
-  async clearBookContentOnly(bookId: string) {
-    const db = await getLocalDB();
-    if (!db) return;
-    await db.delete("books_content", bookId);
-    await db.delete("chapters_cache", bookId);
+    try {
+      const db = await getLocalDB();
+      if (!db) return null;
+      return await db.get("books_content", bookId);
+    } catch {
+      return null;
+    }
   },
 
   async deleteBookContent(bookId: string) {
-    const db = await getLocalDB();
-    if (!db) return;
-    await db.delete("books_content", bookId);
-    await db.delete("local_progress", bookId);
-    await db.delete("local_progress", getProgressKey(bookId));
-    await db.delete("chapters_cache", bookId);
     if (typeof localStorage !== "undefined") {
       try {
         localStorage.removeItem(`${LS_PROGRESS_PREFIX}${bookId}`);
-        localStorage.removeItem(`${LS_PROGRESS_PREFIX}${getProgressKey(bookId)}`);
-      } catch (e) {}
+        localStorage.removeItem(`${LS_PROGRESS_PREFIX}default_user:${bookId}`);
+      } catch {}
     }
     try {
-      const tx = db.transaction("bookmarks", "readwrite");
-      const index = tx.store.index("by_book");
-      let cursor = await index.openCursor(bookId);
-      while (cursor) {
-        await cursor.delete();
-        cursor = await cursor.continue();
-      }
-      await tx.done;
-    } catch (e) {
-      console.warn("Error cleaning bookmarks for deleted book:", e);
-    }
+      const db = await getLocalDB();
+      if (!db) return;
+      await db.delete("books_content", bookId);
+      await db.delete("local_progress", bookId);
+      await db.delete("local_progress", `default_user:${bookId}`);
+      await db.delete("chapters_cache", bookId);
+    } catch {}
   },
 
   async updateBookTitle(bookId: string, title: string) {
-    const db = await getLocalDB();
-    if (!db) return;
-    const existing = await db.get("books_content", bookId);
-    if (existing) {
-      existing.title = title;
-      await db.put("books_content", existing);
-    }
+    try {
+      const db = await getLocalDB();
+      if (!db) return;
+      const existing = await db.get("books_content", bookId);
+      if (existing) {
+        existing.title = title;
+        await db.put("books_content", existing);
+      }
+    } catch {}
   },
 
-  /**
-   * 儲存一筆完整的進度快照（不與舊紀錄合併欄位，避免殘留其他排版/模式的 page_index）
-   * 1. 先「同步」寫入 localStorage：PWA 退到背景後頁面可能立即被凍結/終止，IDB 非同步交易可能來不及提交
-   * 2. IDB 以單一 readwrite 交易 get + put，且絕不讓較舊的紀錄覆蓋較新的紀錄
-   */
   async saveLocalProgress(
     bookId: string,
     charOffset: number,
     percentage: number,
     deviceName: string,
-    synced: boolean = false,
     timestamp?: string,
-    extra?: ProgressExtraFields,
-    userId?: string
+    extra?: ProgressExtraFields
   ) {
-    const effectiveUserId = resolveProgressUserId(userId);
-    const progressKey = `${effectiveUserId}:${bookId}`;
     const newProgress: LocalProgressRecord = {
-      book_id: progressKey,
-      user_id: effectiveUserId,
+      book_id: bookId,
       char_offset: charOffset,
       percentage,
       chapter_index: extra?.chapter_index,
@@ -277,302 +184,55 @@ export const LocalStore = {
       total_pages: extra?.total_pages,
       device_name: deviceName,
       updated_at: timestamp || new Date().toISOString(),
-      synced,
     };
 
-    if (isNotOlder(newProgress, readLsProgress(progressKey))) {
-      writeLsProgress(progressKey, newProgress);
-      writeLsProgress(bookId, newProgress);
-    }
+    writeLsProgress(bookId, newProgress);
 
-    const db = await getLocalDB();
-    if (!db) return;
-    const tx = db.transaction("local_progress", "readwrite");
-    const existing = await tx.store.get(progressKey);
-    if (isNotOlder(newProgress, existing)) {
-      await tx.store.put(newProgress);
-    }
-    await tx.done;
-  },
-
-  /** 將伺服器（其他裝置）較新的進度寫入本機，標記為已同步 */
-  async applyServerProgress(
-    bookId: string,
-    server: {
-      char_offset: number;
-      percentage?: number;
-      device_name?: string;
-      updated_at: string;
-      chapter_index?: number | null;
-      page_index?: number | null;
-      page_ratio?: number | null;
-      total_pages?: number | null;
-    },
-    userId?: string
-  ) {
-    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-    await this.saveLocalProgress(
-      bookId,
-      server.char_offset,
-      server.percentage || 0,
-      server.device_name || "其他裝置",
-      true,
-      server.updated_at,
-      {
-        chapter_index: num(server.chapter_index),
-        page_index: num(server.page_index),
-        page_ratio: num(server.page_ratio),
-        total_pages: num(server.total_pages),
-      },
-      userId
-    );
-  },
-
-  async getLocalProgress(bookId: string, userId?: string): Promise<LocalProgressRecord | null> {
-    const effectiveUserId = resolveProgressUserId(userId);
-    const progressKey = `${effectiveUserId}:${bookId}`;
-    let db: IDBPDatabase<NovelReaderDB> | null = null;
-    try {
-      db = await getLocalDB();
-    } catch (e) {}
-
-    const read = async (key: string) => {
-      let idbRecord: LocalProgressRecord | undefined;
-      try {
-        idbRecord = db ? await db.get("local_progress", key) : undefined;
-      } catch (e) {}
-      // IDB 與 localStorage 取較新者（背景被終止時 localStorage 可能比 IDB 新）
-      return pickNewerProgress(idbRecord, readLsProgress(key));
-    };
-
-    let record = await read(progressKey);
-    if (!record && effectiveUserId !== "default_user") {
-      record = await read(`default_user:${bookId}`);
-    }
-    if (!record) {
-      record = await read(bookId);
-    }
-    return record;
-  },
-
-  async getAllUnsyncedProgress(): Promise<LocalProgressRecord[]> {
-    let db: IDBPDatabase<NovelReaderDB> | null = null;
-    try {
-      db = await getLocalDB();
-    } catch (e) {}
-    const all = db ? await db.getAll("local_progress") : [];
-    const merged = new Map<string, LocalProgressRecord>(all.map((r) => [r.book_id, r]));
-
-    // 合併 localStorage 鏡像：若 IDB 交易在頁面被終止前沒提交，localStorage 仍保有最後進度
-    if (typeof localStorage !== "undefined") {
-      try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const lsKey = localStorage.key(i);
-          if (!lsKey || !lsKey.startsWith(LS_PROGRESS_PREFIX)) continue;
-          const key = lsKey.slice(LS_PROGRESS_PREFIX.length);
-          if (!key.includes(":")) continue;
-          const lsRecord = readLsProgress(key);
-          if (!lsRecord || lsRecord.book_id !== key) continue;
-          const idbRecord = merged.get(key);
-          if (pickNewerProgress(idbRecord, lsRecord) === lsRecord && lsRecord !== idbRecord) {
-            merged.set(key, lsRecord);
-            db?.put("local_progress", lsRecord).catch(() => {});
-          }
-        }
-      } catch (e) {}
-    }
-
-    return Array.from(merged.values()).filter((p) => !p.synced);
-  },
-
-  /**
-   * 標記為已同步；若指定 updatedAt，只有在本機紀錄仍是同一筆時才標記，
-   * 避免較早送出的請求回應時，把之後新產生、尚未上傳的進度誤標為已同步
-   */
-  async markProgressSynced(progressKey: string, updatedAt?: string) {
-    const matches = (r?: LocalProgressRecord | null) =>
-      !!r && !r.synced && (!updatedAt || r.updated_at === updatedAt);
-
-    const lsRecord = readLsProgress(progressKey);
-    if (matches(lsRecord)) {
-      const next = { ...lsRecord!, synced: true };
-      writeLsProgress(progressKey, next);
-      const sep = progressKey.indexOf(":");
-      if (sep >= 0) {
-        const bareKey = progressKey.slice(sep + 1);
-        if (matches(readLsProgress(bareKey))) writeLsProgress(bareKey, next);
-      }
-    }
-
-    const db = await getLocalDB();
-    if (!db) return;
-    const tx = db.transaction("local_progress", "readwrite");
-    const existing = await tx.store.get(progressKey);
-    if (matches(existing)) {
-      await tx.store.put({ ...existing!, synced: true });
-    }
-    await tx.done;
-  },
-
-
-  async getSetting<T>(key: string, defaultValue: T): Promise<T> {
-    const db = await getLocalDB();
-    if (!db) return defaultValue;
-    const val = await db.get("settings", key);
-    return val !== undefined ? (val as T) : defaultValue;
-  },
-
-  async getAllCachedBooks(): Promise<Book[]> {
     try {
       const db = await getLocalDB();
-      if (!db) return [];
-      const contents = await db.getAll("books_content");
-      return contents
-        .filter((c) => c && c.book_id)
-        .map((c) => ({
-          id: c.book_id,
-          title: c.title || "未命名小說",
-          file_name: `${c.title || c.book_id}.txt`,
-          file_size: c.content?.length || 0,
-          total_chars: c.total_chars || c.content?.length || 0,
-          created_at: c.cached_at || new Date().toISOString(),
-          updated_at: c.cached_at || new Date().toISOString(),
-        }));
-    } catch (e) {
-      console.warn("Failed to get all cached books from IndexedDB:", e);
-      return [];
+      if (!db) return;
+      await db.put("local_progress", newProgress);
+    } catch {}
+  },
+
+  async getLocalProgress(bookId: string): Promise<LocalProgressRecord | null> {
+    const lsProg = readLsProgress(bookId);
+    try {
+      const db = await getLocalDB();
+      if (!db) return lsProg;
+      const idbProg =
+        (await db.get("local_progress", bookId)) ||
+        (await db.get("local_progress", `default_user:${bookId}`));
+      if (!idbProg) return lsProg;
+      if (!lsProg) return idbProg;
+      return parseSafeTime(lsProg.updated_at) >= parseSafeTime(idbProg.updated_at)
+        ? lsProg
+        : idbProg;
+    } catch {
+      return lsProg;
     }
-  },
-
-  async saveBookmark(bookmark: {
-    id: string;
-    book_id: string;
-    char_offset: number;
-    title: string;
-    preview_text: string;
-    user_id?: string;
-    created_at?: string;
-  }) {
-    const db = await getLocalDB();
-    if (!db) return;
-    const effectiveUserId =
-      bookmark.user_id && bookmark.user_id !== "default_user"
-        ? bookmark.user_id
-        : getCachedUserId();
-    await db.put("bookmarks", {
-      ...bookmark,
-      user_id: effectiveUserId,
-      created_at: bookmark.created_at || new Date().toISOString(),
-    });
-  },
-
-  async getBookmarks(bookId: string, userId?: string) {
-    const db = await getLocalDB();
-    if (!db) return [];
-    const effectiveUserId =
-      userId && userId !== "default_user" ? userId : getCachedUserId();
-    const index = db.transaction("bookmarks").store.index("by_book");
-    const all = await index.getAll(bookId);
-    return all.filter(
-      (b: any) =>
-        !b.user_id ||
-        b.user_id === "default_user" ||
-        b.user_id === effectiveUserId
-    );
-  },
-
-  async getDeletedBookmarkIds(): Promise<string[]> {
-    return this.getSetting<string[]>("deleted_bookmark_ids", []);
-  },
-
-  async markBookmarkDeleted(id: string) {
-    const deleted = await this.getDeletedBookmarkIds();
-    if (!deleted.includes(id)) {
-      deleted.push(id);
-      await this.setSetting("deleted_bookmark_ids", deleted);
-    }
-  },
-
-  async clearBookmarkDeleted(id: string) {
-    const deleted = await this.getDeletedBookmarkIds();
-    const next = deleted.filter((x) => x !== id);
-    await this.setSetting("deleted_bookmark_ids", next);
-  },
-
-  async deleteBookmark(id: string) {
-    const db = await getLocalDB();
-    if (!db) return;
-    await db.delete("bookmarks", id);
-    await this.markBookmarkDeleted(id);
-  },
-
-  async setSetting(key: string, value: any) {
-    const db = await getLocalDB();
-    if (!db) return;
-    await db.put("settings", value, key);
   },
 
   async saveChapters(bookId: string, chapters: any[]) {
-    const db = await getLocalDB();
-    if (!db || !chapters) return;
-    await db.put("chapters_cache", {
-      book_id: bookId,
-      chapters,
-      cached_at: new Date().toISOString(),
-    });
+    try {
+      const db = await getLocalDB();
+      if (!db || !chapters) return;
+      await db.put("chapters_cache", {
+        book_id: bookId,
+        chapters,
+        cached_at: new Date().toISOString(),
+      });
+    } catch {}
   },
 
   async getChapters(bookId: string): Promise<any[] | null> {
-    const db = await getLocalDB();
-    if (!db) return null;
-    const record = await db.get("chapters_cache", bookId);
-    return record?.chapters || null;
-  },
-
-  async getPendingUploads(): Promise<PendingUploadBook[]> {
-    return this.getSetting<PendingUploadBook[]>("pending_book_uploads", []);
-  },
-
-  async savePendingUpload(item: PendingUploadBook): Promise<void> {
-    const list = await this.getPendingUploads();
-    const filtered = list.filter((b) => b.id !== item.id);
-    filtered.push(item);
-    await this.setSetting("pending_book_uploads", filtered);
-  },
-
-  async removePendingUpload(bookId: string): Promise<void> {
-    const list = await this.getPendingUploads();
-    const next = list.filter((b) => b.id !== bookId);
-    await this.setSetting("pending_book_uploads", next);
-  },
-
-  async getRemovedBookIds(): Promise<string[]> {
-    return this.getSetting<string[]>("locally_removed_book_ids", []);
-  },
-
-  async markBookRemoved(bookId: string): Promise<void> {
-    const list = await this.getRemovedBookIds();
-    if (!list.includes(bookId)) {
-      list.push(bookId);
-      await this.setSetting("locally_removed_book_ids", list);
+    try {
+      const db = await getLocalDB();
+      if (!db) return null;
+      const record = await db.get("chapters_cache", bookId);
+      return record?.chapters || null;
+    } catch {
+      return null;
     }
   },
-
-  async unmarkBookRemoved(bookId: string): Promise<void> {
-    const list = await this.getRemovedBookIds();
-    const next = list.filter((id) => id !== bookId);
-    await this.setSetting("locally_removed_book_ids", next);
-  },
 };
-
-export interface PendingUploadBook {
-  id: string;
-  title: string;
-  content: string;
-  fileSize: number;
-  totalChars: number;
-  originalFileName: string;
-  convertToTraditional?: boolean;
-  createdAt: string;
-}
-
