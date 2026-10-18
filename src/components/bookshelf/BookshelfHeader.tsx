@@ -44,7 +44,10 @@ export const BookshelfHeader: React.FC<BookshelfHeaderProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[var(--border-color)] bg-[var(--card-bg)] px-4 sm:px-8 py-3.5 flex items-center justify-between gap-2">
+    <header
+      style={{ backdropFilter: "none", WebkitBackdropFilter: "none" }}
+      className="sticky top-0 z-30 border-b border-[var(--border-color)] bg-[var(--card-bg)] px-4 sm:px-8 py-3.5 flex items-center justify-between gap-2"
+    >
       {/* Brand */}
       <div className="flex items-center space-x-3 min-w-0">
         <button

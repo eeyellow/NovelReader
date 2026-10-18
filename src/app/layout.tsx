@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
-    statusBarStyle: "black-translucent",
+    statusBarStyle: "default",
     title: "小說閱讀",
   },
   formatDetection: {
@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#8b5e3c",
+  themeColor: "#fbf6ec",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
@@ -39,6 +39,19 @@ export default function RootLayout({
             __html: `
               (function() {
                 try {
+                  var themeColors = {
+                    parchment: '#fbf6ec',
+                    dark: '#141416',
+                    oled: '#000000',
+                    eyecare: '#dcebd9',
+                    light: '#fafafa'
+                  };
+                  var savedTheme = localStorage.getItem('novel_reader_theme') || 'parchment';
+                  document.documentElement.setAttribute('data-theme', savedTheme);
+                  var metaTheme = document.querySelector('meta[name="theme-color"]');
+                  if (metaTheme && themeColors[savedTheme]) {
+                    metaTheme.setAttribute('content', themeColors[savedTheme]);
+                  }
                   var path = window.location.pathname;
                   var search = window.location.search;
                   var isManual = search.indexOf('from=reader') !== -1 || search.indexOf('shelf=1') !== -1;

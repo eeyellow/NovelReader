@@ -131,6 +131,17 @@ export function useBookshelf() {
     const savedTheme = localStorage.getItem("novel_reader_theme") || "parchment";
     setCurrentTheme(savedTheme);
     document.documentElement.setAttribute("data-theme", savedTheme);
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    const themeColors: Record<string, string> = {
+      parchment: "#fbf6ec",
+      dark: "#141416",
+      oled: "#000000",
+      eyecare: "#dcebd9",
+      light: "#fafafa",
+    };
+    if (metaTheme && themeColors[savedTheme]) {
+      metaTheme.setAttribute("content", themeColors[savedTheme]);
+    }
 
     const savedLayout =
       (localStorage.getItem("novel_reader_shelf_layout") as ShelfLayoutMode) || "detailed";
@@ -191,6 +202,17 @@ export function useBookshelf() {
     setCurrentTheme(themeId);
     document.documentElement.setAttribute("data-theme", themeId);
     localStorage.setItem("novel_reader_theme", themeId);
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    const themeColors: Record<string, string> = {
+      parchment: "#fbf6ec",
+      dark: "#141416",
+      oled: "#000000",
+      eyecare: "#dcebd9",
+      light: "#fafafa",
+    };
+    if (metaTheme && themeColors[themeId]) {
+      metaTheme.setAttribute("content", themeColors[themeId]);
+    }
   };
 
   // 上傳檔案至伺服器

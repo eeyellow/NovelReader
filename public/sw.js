@@ -3,7 +3,7 @@
  * @description PWA 離線閱讀 Service Worker（Pre-cache 雙殼層 + 導航超時回退 + 靜態資源快取）
  */
 
-const CACHE_VERSION = "novel-reader-942d7f2-mvdi4w1d";
+const CACHE_VERSION = "novel-reader-e006198-mvdj24pw";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const PAGES_CACHE = `${CACHE_VERSION}-pages`;
 const READER_SHELL_KEY = "/__reader_shell__";

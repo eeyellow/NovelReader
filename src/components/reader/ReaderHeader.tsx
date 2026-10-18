@@ -26,7 +26,7 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = ({
   return (
     <header
       style={{ backdropFilter: "none", WebkitBackdropFilter: "none" }}
-      className={`fixed top-0 inset-x-0 z-40 bg-[var(--card-bg)] border-b border-[var(--border-color)] px-4 py-2 safe-area-top items-center justify-between shadow-sm transition-opacity duration-200 ${
+      className={`fixed top-0 inset-x-0 z-40 bg-[var(--card-bg)] border-b border-[var(--border-color)] px-4 py-2 safe-area-top items-center justify-between ${
         showToolbar ? "flex" : "hidden"
       }`}
     >
