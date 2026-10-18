@@ -40,6 +40,21 @@ try {
   };
   fs.writeFileSync(versionJsonPath, JSON.stringify(vPayload, null, 2) + "\n", "utf8");
   console.log(`[Version] Synced version.json commit to: ${gitHash}`);
+
+  const swPath = path.resolve(__dirname, "../public/sw.js");
+  if (fs.existsSync(swPath)) {
+    const swSrc = fs.readFileSync(swPath, "utf8");
+    const cacheVersion = `novel-reader-${gitHash}-${Date.now().toString(36)}`;
+    fs.writeFileSync(
+      swPath,
+      swSrc.replace(
+        /const CACHE_VERSION = "[^"]+";/,
+        `const CACHE_VERSION = "${cacheVersion}";`
+      ),
+      "utf8"
+    );
+    console.log(`[PWA] sw.js CACHE_VERSION -> ${cacheVersion}`);
+  }
 } catch (err) {
   console.warn("[Version] Could not write version.json:", err);
 }

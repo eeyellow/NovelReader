@@ -18,11 +18,44 @@ export interface SyncPayload extends ProgressExtra {
 
 const PROGRESS_ENDPOINT = "/api/progress";
 const DEBOUNCE_MS = 1500;
+const LS_PENDING_SYNC_KEY = "novel_reader_pending_sync";
 
 const pendingPayloads = new Map<string, SyncPayload>();
 const beforeBackgroundCallbacks = new Set<() => void>();
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let hydratedFromStorage = false;
+
+function hydratePendingPayloads() {
+  if (hydratedFromStorage || typeof localStorage === "undefined") return;
+  hydratedFromStorage = true;
+  try {
+    const raw = localStorage.getItem(LS_PENDING_SYNC_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, SyncPayload>;
+    if (parsed && typeof parsed === "object") {
+      for (const [bookId, payload] of Object.entries(parsed)) {
+        if (bookId && bookId !== "__shell__" && payload && !pendingPayloads.has(bookId)) {
+          pendingPayloads.set(bookId, payload);
+        }
+      }
+    }
+  } catch {}
+}
+
+function persistPendingPayloads() {
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (pendingPayloads.size === 0) {
+      localStorage.removeItem(LS_PENDING_SYNC_KEY);
+    } else {
+      localStorage.setItem(
+        LS_PENDING_SYNC_KEY,
+        JSON.stringify(Object.fromEntries(pendingPayloads.entries()))
+      );
+    }
+  } catch {}
+}
 
 function clearDebounce() {
   if (debounceTimer) {
@@ -66,7 +99,8 @@ export function syncProgress(
   forceImmediate: boolean = false,
   extra?: ProgressExtra
 ) {
-  if (typeof window === "undefined" || !bookId) return;
+  if (typeof window === "undefined" || !bookId || bookId === "__shell__") return;
+  hydratePendingPayloads();
 
   const deviceName = getDeviceName();
   const payload: SyncPayload = {
@@ -95,6 +129,7 @@ export function syncProgress(
   ).catch(() => {});
 
   pendingPayloads.set(bookId, payload);
+  persistPendingPayloads();
 
   clearDebounce();
   if (forceImmediate) {
@@ -110,7 +145,9 @@ export function syncProgress(
 
 export async function flushPendingProgress(): Promise<void> {
   clearDebounce();
+  hydratePendingPayloads();
   if (pendingPayloads.size === 0) return;
+  if (typeof navigator !== "undefined" && !navigator.onLine) return;
 
   const entries = Array.from(pendingPayloads.entries());
   for (const [bookId, payload] of entries) {
@@ -125,6 +162,7 @@ export async function flushPendingProgress(): Promise<void> {
         const current = pendingPayloads.get(bookId);
         if (current && current.updated_at === payload.updated_at) {
           pendingPayloads.delete(bookId);
+          persistPendingPayloads();
         }
       }
     } catch {}
@@ -138,14 +176,21 @@ export function beaconPendingProgress(): void {
     } catch {}
   });
   clearDebounce();
+  hydratePendingPayloads();
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    persistPendingPayloads();
+    return; // 離線時保留 pending，待恢復連線後補傳
+  }
   pendingPayloads.forEach((payload, bookId) => {
     if (sendInBackground(JSON.stringify(payload))) {
       pendingPayloads.delete(bookId);
     }
   });
+  persistPendingPayloads();
 }
 
 if (typeof window !== "undefined") {
+  hydratePendingPayloads();
   const onHidden = () => {
     beaconPendingProgress();
   };
@@ -156,4 +201,7 @@ if (typeof window !== "undefined") {
     }
   });
   window.addEventListener("pagehide", onHidden);
+  window.addEventListener("online", () => {
+    void flushPendingProgress();
+  });
 }

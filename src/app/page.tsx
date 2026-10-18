@@ -55,7 +55,7 @@ export default function BookshelfPage() {
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-8 space-y-6">
         <BookUploadBar
           isUploading={shelf.isUploading}
-          isOffline={false}
+          isOffline={shelf.isOffline}
           uploadStatus={shelf.uploadStatus}
           searchTerm={shelf.searchTerm}
           fileInputRef={shelf.fileInputRef}
@@ -101,9 +101,11 @@ export default function BookshelfPage() {
               <p className="text-xs text-[var(--text-muted)] max-w-sm mx-auto">
                 {shelf.searchTerm
                   ? "找不到符合搜尋條件的小說"
+                  : shelf.isOffline
+                  ? "目前處於離線狀態且尚無已快取的書籍，請連線後開啟。"
                   : "快把電腦或手機裡的 .TXT / .EPUB 小說檔案拖曳進來開始閱讀吧！"}
               </p>
-              {!shelf.searchTerm && (
+              {!shelf.searchTerm && !shelf.isOffline && (
                 <div className="pt-2">
                   <button
                     onClick={() => shelf.fileInputRef.current?.click()}
@@ -122,6 +124,8 @@ export default function BookshelfPage() {
                   key={book.id}
                   book={book}
                   layoutMode="compact"
+                  isCached={shelf.cachedIds.has(book.id)}
+                  isOffline={shelf.isOffline}
                   onDelete={shelf.handleDeleteBook}
                   onOpenRename={shelf.handleOpenRename}
                 />
@@ -134,6 +138,8 @@ export default function BookshelfPage() {
                   key={book.id}
                   book={book}
                   layoutMode="detailed"
+                  isCached={shelf.cachedIds.has(book.id)}
+                  isOffline={shelf.isOffline}
                   onDelete={shelf.handleDeleteBook}
                   onOpenRename={shelf.handleOpenRename}
                 />

@@ -39,6 +39,35 @@ interface NovelReaderDB extends DBSchema {
 const DB_NAME = "novel_reader_local";
 const DB_VERSION = 3;
 const LS_PROGRESS_PREFIX = "novel_reader_prog_";
+const LS_BOOKS_KEY = "novel_reader_books_cache";
+
+export const BooksCache = {
+  save(books: unknown[]) {
+    if (typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(LS_BOOKS_KEY, JSON.stringify(books));
+    } catch {}
+  },
+  load<T>(): T[] {
+    if (typeof localStorage === "undefined") return [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(LS_BOOKS_KEY) || "[]");
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
+  },
+  remove(bookId: string) {
+    const list = this.load<{ id: string }>();
+    if (!list.length) return;
+    this.save(list.filter((b) => b.id !== bookId));
+  },
+  rename(bookId: string, title: string) {
+    const list = this.load<{ id: string; title: string }>();
+    if (!list.length) return;
+    this.save(list.map((b) => (b.id === bookId ? { ...b, title } : b)));
+  },
+};
 
 let dbPromise: Promise<IDBPDatabase<NovelReaderDB>> | null = null;
 
@@ -106,8 +135,90 @@ function writeLsProgress(bookId: string, record: LocalProgressRecord) {
 }
 
 export const LocalStore = {
+  async listCachedBookIds(): Promise<Set<string>> {
+    try {
+      const db = await getLocalDB();
+      if (!db) return new Set();
+      const keys = (await db.getAllKeys("books_content")) as string[];
+      return new Set(keys.filter((k) => k && k !== "__shell__"));
+    } catch {
+      return new Set();
+    }
+  },
+
+  async mergeBooksWithLocalState<
+    T extends {
+      id: string;
+      title: string;
+      file_size?: number;
+      total_chars: number;
+      created_at?: string;
+      char_offset?: number;
+      percentage?: number;
+      last_device?: string;
+      progress_updated_at?: string;
+      chapter_index?: number;
+      page_index?: number;
+      page_ratio?: number;
+      total_pages?: number;
+    }
+  >(baseBooks: T[], includeIdbOnlyBooks: boolean = false): Promise<T[]> {
+    const bookMap = new Map<string, T>();
+    for (const b of baseBooks) {
+      if (b && b.id && b.id !== "__shell__") {
+        bookMap.set(b.id, { ...b });
+      }
+    }
+
+    if (includeIdbOnlyBooks) {
+      try {
+        const db = await getLocalDB();
+        if (db) {
+          const allContent = await db.getAll("books_content");
+          for (const rec of allContent) {
+            if (!rec?.book_id || rec.book_id === "__shell__") continue;
+            if (!bookMap.has(rec.book_id)) {
+              const chars = rec.total_chars || rec.content?.length || 0;
+              bookMap.set(rec.book_id, {
+                id: rec.book_id,
+                title: rec.title || "已快取小說",
+                file_size: chars * 3,
+                total_chars: chars,
+                created_at: rec.cached_at || new Date().toISOString(),
+              } as T);
+            }
+          }
+        }
+      } catch {}
+    }
+
+    const result: T[] = [];
+    for (const book of bookMap.values()) {
+      const localProg = await this.getLocalProgress(book.id);
+      if (localProg) {
+        const localTime = parseSafeTime(localProg.updated_at);
+        const bookTime = parseSafeTime(book.progress_updated_at);
+        if (localTime >= bookTime) {
+          book.char_offset = localProg.char_offset;
+          book.percentage = localProg.percentage;
+          book.last_device = localProg.device_name || book.last_device;
+          book.progress_updated_at = localProg.updated_at;
+          book.chapter_index = localProg.chapter_index ?? book.chapter_index;
+          book.page_index = localProg.page_index ?? book.page_index;
+          book.page_ratio = localProg.page_ratio ?? book.page_ratio;
+          book.total_pages = localProg.total_pages ?? book.total_pages;
+        }
+      }
+      result.push(book);
+    }
+
+    return result;
+  },
+
   async saveBookContent(bookId: string, title: string, content: string, totalChars: number) {
     if (
+      !bookId ||
+      bookId === "__shell__" ||
       !content ||
       typeof content !== "string" ||
       (content.startsWith('{"') && content.includes('"success":false'))
@@ -138,6 +249,7 @@ export const LocalStore = {
   },
 
   async deleteBookContent(bookId: string) {
+    BooksCache.remove(bookId);
     if (typeof localStorage !== "undefined") {
       try {
         localStorage.removeItem(`${LS_PROGRESS_PREFIX}${bookId}`);
@@ -155,6 +267,7 @@ export const LocalStore = {
   },
 
   async updateBookTitle(bookId: string, title: string) {
+    BooksCache.rename(bookId, title);
     try {
       const db = await getLocalDB();
       if (!db) return;
@@ -174,6 +287,7 @@ export const LocalStore = {
     timestamp?: string,
     extra?: ProgressExtraFields
   ) {
+    if (!bookId || bookId === "__shell__") return;
     const newProgress: LocalProgressRecord = {
       book_id: bookId,
       char_offset: charOffset,
@@ -214,6 +328,7 @@ export const LocalStore = {
   },
 
   async saveChapters(bookId: string, chapters: any[]) {
+    if (!bookId || bookId === "__shell__") return;
     try {
       const db = await getLocalDB();
       if (!db || !chapters) return;

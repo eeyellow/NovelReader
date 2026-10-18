@@ -29,10 +29,34 @@ import { TOCDrawer } from "@/components/reader/TOCDrawer";
 import { ReaderSettingsDrawer } from "@/components/reader/ReaderSettingsDrawer";
 import { ReaderToasts } from "@/components/reader/ReaderToasts";
 
+function resolveBookIdFromLocation(paramId: string): string {
+  if (typeof window !== "undefined") {
+    const match = window.location.pathname.match(/^\/reader\/([^/?#]+)/);
+    if (match && match[1] && match[1] !== "__shell__") {
+      try {
+        return decodeURIComponent(match[1]);
+      } catch {
+        return match[1];
+      }
+    }
+  }
+  return paramId && paramId !== "__shell__" ? paramId : "";
+}
+
 export default function ReaderPage() {
   const params = useParams();
   const router = useRouter();
-  const bookId = (params?.id as string) || "";
+  const rawParamId = (params?.id as string) || "";
+  const [bookId, setBookId] = useState<string>(() =>
+    resolveBookIdFromLocation(rawParamId)
+  );
+
+  useEffect(() => {
+    const resolved = resolveBookIdFromLocation(rawParamId);
+    if (resolved && resolved !== bookId) {
+      setBookId(resolved);
+    }
+  }, [rawParamId, bookId]);
 
   // 基礎書籍資料狀態
   const [title, setTitle] = useState("載入中...");
@@ -117,7 +141,7 @@ export default function ReaderPage() {
   });
 
   useEffect(() => {
-    if (!bookId) return;
+    if (!bookId || bookId === "__shell__") return;
 
     localStorage.setItem("novel_reader_last_book_id", bookId);
 
@@ -137,9 +161,16 @@ export default function ReaderPage() {
         bookChars = cached.total_chars;
       }
 
+      const metaController = new AbortController();
+      const metaTimeout = setTimeout(
+        () => metaController.abort(),
+        cached?.content ? 2500 : 8000
+      );
+
       try {
         const metaRes = await fetch(`/api/books/${encodeURIComponent(bookId)}`, {
           cache: "no-store",
+          signal: metaController.signal,
         });
 
         if (metaRes.ok) {
@@ -171,6 +202,8 @@ export default function ReaderPage() {
         }
       } catch (err) {
         console.warn("取得書籍元資料失敗，嘗試使用本機快取:", err);
+      } finally {
+        clearTimeout(metaTimeout);
       }
 
       // 2. 若本機尚未快取內文，從伺服器下載內文並存入輕量快取
@@ -194,8 +227,11 @@ export default function ReaderPage() {
           await LocalStore.saveBookContent(bookId, bookTitle, bookText, bookChars);
         } catch (err) {
           console.error(err);
-          localStorage.removeItem("novel_reader_last_book_id");
-          alert("無法載入小說，請確認網路連線正常。");
+          alert(
+            typeof navigator !== "undefined" && !navigator.onLine
+              ? "目前離線，且此書尚未下載到本機。請連線後開啟一次。"
+              : "無法載入小說，請稍後再試。"
+          );
           router.push("/?from=reader");
           return;
         }

@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Book } from "@/lib/db";
-import { LocalStore } from "@/lib/idb";
+import { LocalStore, BooksCache } from "@/lib/idb";
 import { getDeviceName, setCustomDeviceName } from "@/lib/device";
 import { decodeToUtf8 } from "@/lib/encoding";
 import { isSimplifiedChinese, convertToTraditional, convertToSimplified } from "@/lib/chinese";
@@ -16,6 +16,8 @@ import { SortField, SortOrder, ShelfLayoutMode, EditingBookState } from "@/types
 export function useBookshelf() {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
+  const [cachedIds, setCachedIds] = useState<Set<string>>(() => new Set());
   const [isRedirecting, setIsRedirecting] = useState(false);
   const [autoResume, setAutoResume] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
@@ -56,27 +58,47 @@ export function useBookshelf() {
     };
   }, [showThemeMenu]);
 
-  // 從伺服器載入書籍列表
+  // 從伺服器載入書籍列表（失敗時退回本機快取）
   const fetchBooks = useCallback(async () => {
     if (isFetchingBooksRef.current) return;
     isFetchingBooksRef.current = true;
+    setCachedIds(await LocalStore.listCachedBookIds());
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
 
     try {
       await flushPendingProgress();
       const res = await fetch("/api/books", {
         cache: "no-store",
         headers: { "Cache-Control": "no-cache" },
+        signal: controller.signal,
       });
 
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.books)) {
-          setBooks(data.books as Book[]);
+          const merged = await LocalStore.mergeBooksWithLocalState(
+            data.books as Book[],
+            false
+          );
+          setBooks(merged);
+          BooksCache.save(merged);
+          setIsOffline(false);
+          return;
         }
       }
+      throw new Error(`books api ${res.status}`);
     } catch (e) {
-      console.warn("取得書籍列表失敗:", e);
+      console.warn("取得書籍列表失敗，切換為本機離線快取:", e);
+      const fallback = await LocalStore.mergeBooksWithLocalState(
+        BooksCache.load<Book>(),
+        true
+      );
+      setBooks((prev) => (fallback.length ? fallback : prev));
+      setIsOffline(true);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
       isFetchingBooksRef.current = false;
     }
@@ -94,11 +116,16 @@ export function useBookshelf() {
 
       const lastBookId = localStorage.getItem("novel_reader_last_book_id");
 
-      if (savedAutoResume && lastBookId && !isManualShelf) {
+      if (savedAutoResume && lastBookId && lastBookId !== "__shell__" && !isManualShelf) {
         setIsRedirecting(true);
         window.location.replace(`/reader/${encodeURIComponent(lastBookId)}`);
         return;
       }
+
+      if (!navigator.onLine) {
+        setIsOffline(true);
+      }
+      navigator.storage?.persist?.().catch(() => {});
     }
 
     const savedTheme = localStorage.getItem("novel_reader_theme") || "parchment";
@@ -123,12 +150,24 @@ export function useBookshelf() {
         fetchBooks();
       }
     };
+    const handleOnline = () => {
+      setIsOffline(false);
+      fetchBooks();
+    };
+    const handleOffline = () => {
+      setIsOffline(true);
+    };
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
 
     fetchBooks();
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
     };
   }, [fetchBooks]);
 
@@ -204,6 +243,10 @@ export function useBookshelf() {
   // 選擇檔案時偵測編碼與簡繁體
   const handleFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    if (isOffline || (typeof navigator !== "undefined" && !navigator.onLine)) {
+      alert("目前處於離線狀態，請連線後再上傳小說。");
+      return;
+    }
     const file = files[0];
 
     if (fileInputRef.current) {
@@ -268,6 +311,11 @@ export function useBookshelf() {
     e.preventDefault();
     e.stopPropagation();
 
+    if (isOffline || (typeof navigator !== "undefined" && !navigator.onLine)) {
+      alert("目前處於離線狀態，無法刪除伺服器端書籍。");
+      return;
+    }
+
     if (!confirm(`確定要永久刪除《${book.title}》嗎？`)) {
       return;
     }
@@ -284,6 +332,11 @@ export function useBookshelf() {
 
       await LocalStore.deleteBookContent(book.id);
       setBooks((prev) => prev.filter((b) => b.id !== book.id));
+      setCachedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(book.id);
+        return next;
+      });
 
       if (
         typeof window !== "undefined" &&
@@ -300,6 +353,10 @@ export function useBookshelf() {
   const handleOpenRename = (e: React.MouseEvent, book: Book) => {
     e.preventDefault();
     e.stopPropagation();
+    if (isOffline || (typeof navigator !== "undefined" && !navigator.onLine)) {
+      alert("目前處於離線狀態，無法修改書名。");
+      return;
+    }
     setEditingBook({ id: book.id, title: book.title });
     setEditTitleInput(book.title);
   };
@@ -396,6 +453,8 @@ export function useBookshelf() {
   return {
     books,
     loading,
+    isOffline,
+    cachedIds,
     isRedirecting,
     autoResume,
     setAutoResume,

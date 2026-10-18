@@ -44,7 +44,7 @@ export default function RootLayout({
                   var isManual = search.indexOf('from=reader') !== -1 || search.indexOf('shelf=1') !== -1;
                   var autoResume = localStorage.getItem('novel_reader_auto_resume') !== 'false';
                   var lastBookId = localStorage.getItem('novel_reader_last_book_id');
-                  if ((path === '/' || path === '') && !isManual && autoResume && lastBookId) {
+                  if ((path === '/' || path === '') && !isManual && autoResume && lastBookId && lastBookId !== '__shell__') {
                     window.location.replace('/reader/' + encodeURIComponent(lastBookId));
                   }
                 } catch(e) {}
@@ -55,22 +55,28 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen flex flex-col antialiased select-text">
         {children}
-        {/* 自動清除歷史殘留的 Service Worker 與快取 */}
+        {/* 註冊 Service Worker（離線閱讀） */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.getRegistrations().then(function(registrations) {
-                  for (var i = 0; i < registrations.length; i++) {
-                    registrations[i].unregister();
-                  }
-                }).catch(function() {});
-                if ('caches' in window) {
-                  caches.keys().then(function(keys) {
-                    for (var j = 0; j < keys.length; j++) {
-                      caches.delete(keys[j]);
-                    }
-                  }).catch(function() {});
+                var registerSw = function() {
+                  navigator.serviceWorker
+                    .register('/sw.js', { updateViaCache: 'none' })
+                    .then(function(reg) {
+                      reg.update().catch(function() {});
+                      document.addEventListener('visibilitychange', function() {
+                        if (document.visibilityState === 'visible' && navigator.onLine) {
+                          reg.update().catch(function() {});
+                        }
+                      });
+                    })
+                    .catch(function(err) { console.warn('SW register failed', err); });
+                };
+                if (document.readyState === 'complete') {
+                  registerSw();
+                } else {
+                  window.addEventListener('load', registerSw);
                 }
               }
             `,
